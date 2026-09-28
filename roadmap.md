@@ -1,26 +1,30 @@
 # roadmap.md
-ROADMAP_VERSION: 1.0
+ROADMAP_VERSION: 1.1
 ROADMAP_UPDATED: 2026-09-28
 REPO: test-genclip
 
-## ROADMAP AKTIF
-Tahap saat ini: M1 — Source
+## PIPELINE v1
 
-## TARGET v1
-1. M1 — Source
-   URL → SRT → timeline valid.
+M1 — Source
+URL YouTube → SRT + timeline valid.
 
-2. M2 — Story Discovery
-   SRT → menemukan unit cerita, bukan sekadar keyword.
+M2 — Story Discovery
+Timeline → Story Units berdasarkan konteks cerita, bukan keyword.
 
-3. M3 — Candidate Ranking
-   Memilih kandidat terbaik + context + dedup.
+M3 — Candidate Ranking
+Story Units → kandidat clip + context + ranking + dedup.
+M3 menyiapkan kandidat, bukan memilih final.
 
-4. M4 — GenClip Protocol
-   Kandidat → instruksi AI dinamis seperti protocol.md.
+M4 — GenClip Protocol
+Kandidat → prompt.txt.
+AI memeriksa video dan memilih kandidat final.
 
-## OUTPUT AKHIR
-SRT → Story Units → Kandidat terbaik → GenClip Protocol → prompt.txt untuk AI
+## OUTPUT
+SRT → Story Units → Candidates → prompt.txt → AI → GenClip
 
-## RIWAYAT MILESTONE
+## STATUS
+Aktif: M1 — Source
+
+## RIWAYAT
+- v1.1 (2026-09-28): pembagian tanggung jawab M1–M4 diperjelas.
 - v1.0 (2026-09-28): protocol.md universal dipasang.
