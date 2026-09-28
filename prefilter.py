@@ -115,12 +115,23 @@ def build_prefilter_marker(segments, anchor_start, anchor_end):
         if not is_terminal_boundary(segment["text"]):
             continue
 
-        safe_ends.append(round(segment["end"], 3))
+        terminal_end = round(segment["end"], 3)
+        safe_ends.append(terminal_end)
 
-        if index + 1 < len(segments):
-            safe_starts.append(
-                round(segments[index + 1]["start"], 3)
-            )
+        # Transcript segments can overlap. The next segment by list index
+        # may start before the terminal sentence has actually ended, which
+        # would create a START boundary inside the same spoken thought.
+        next_start = next(
+            (
+                candidate["start"]
+                for candidate in segments[index + 1:]
+                if candidate["start"] >= segment["end"] - 1e-6
+            ),
+            None,
+        )
+
+        if next_start is not None:
+            safe_starts.append(round(next_start, 3))
 
     safe_starts = sorted(set(safe_starts))
     safe_ends = sorted(set(safe_ends))
