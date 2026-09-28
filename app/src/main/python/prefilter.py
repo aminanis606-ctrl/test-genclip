@@ -418,15 +418,8 @@ def find_candidates(transcript, limit=None):
             )
         )
 
-        if prefilter_marker:
-            start = min(
-                start,
-                prefilter_marker["start"]
-            )
-            end = max(
-                end,
-                prefilter_marker["end"]
-            )
+        # Structural context is the hard cap. The global marker is
+        # diagnostic/baseline data and must not expand context.
 
         context = [
             s for s in segments
@@ -540,13 +533,10 @@ def build_gemini_prompt(groups, source_url=""):
         "   - DURASI",
         "   - JUDUL/TOPIK",
         "   - ALASAN",
-        "   - KUTIPAN AWAL",
-        "   - KUTIPAN AKHIR",
-        "6. KUTIPAN AWAL dan KUTIPAN AKHIR HARUS dikutip persis dari teks 'TRANSCRIPT' yang diberikan dalam prompt. JANGAN mengarang kutipan.",
-        "   Kutipan awal membuktikan titik START alami, dan kutipan akhir membuktikan titik END alami.",
-        "7. START dan END harus:",
-        "   - Berada di dalam AVAILABLE_CONTEXT kandidat terkait.",
-        "   - Tidak memotong kalimat dan tidak memotong pemikiran pembicara.",
+        "6. Gunakan URL YouTube sebagai sumber utama. Periksa langsung video pada sekitar timestamp kandidat untuk memahami ucapan, konteks, setup, reveal, result, dan payoff.",
+        "   Transcript TIDAK disertakan dalam prompt.",
+        "7. START dan END harus dipilih berdasarkan isi video yang benar-benar diperiksa:",
+        "   - Tidak memotong kalimat atau pemikiran pembicara.",
         "   - Mencakup setup yang diperlukan dan mencakup explanation/reveal/result/payoff yang diperlukan.",
         "8. Durasi clip valid berada pada rentang 25–70 detik. TIDAK ADA preferred duration.",
         "9. Gunakan prinsip: 'STORY COMPLETENESS > DURATION TARGET'. Kelengkapan cerita selalu lebih penting daripada mengejar angka durasi.",
@@ -554,12 +544,7 @@ def build_gemini_prompt(groups, source_url=""):
         "   - Explanation/reveal/result/payoff harus tetap masuk.",
         "   - Jangan memotong clip yang masih koheren hanya agar durasinya lebih pendek.",
         "   - Jangan memperpanjang clip dengan materi yang tidak diperlukan hanya agar mendekati 70 detik.",
-        "10. Jangan memilih kandidat hanya karena ANCHOR-nya memiliki score PREFILTER tinggi. Transcript dan konteks tetap menjadi dasar keputusan.",
-        "11. PREFILTER_FINAL_MARKER adalah baseline deterministic dari PREFILTER dan harus dibandingkan dengan keputusan Gemini.",
-        "12. SAFE_START_BOUNDARIES dan SAFE_END_BOUNDARIES adalah batas waktu yang diizinkan.",
-        "13. START HARUS sama persis dengan salah satu SAFE_START_BOUNDARIES.",
-        "14. END HARUS sama persis dengan salah satu SAFE_END_BOUNDARIES.",
-        "15. Jangan membuat START atau END di luar boundary yang diberikan, meskipun secara semantik terlihat lebih baik.",
+        "10. Jangan memilih kandidat hanya karena ANCHOR-nya memiliki score PREFILTER tinggi. Periksa langsung isi video di sekitar timestamp kandidat.",
         "",
         "=== ATURAN COMMAND YT-DLP ===",
         "16. Jika ada satu atau lebih clip terpilih, Anda HARUS menghasilkan TEPAT SATU command shell yt-dlp untuk SEMUA clip tersebut.",
@@ -603,8 +588,7 @@ def build_gemini_prompt(groups, source_url=""):
         "- DURASI: [durasi dalam detik]",
         "- JUDUL/TOPIK: [judul singkat bersih dari karakter ilegal filesystem]",
         "- ALASAN: [alasan singkat]",
-        "- KUTIPAN AWAL: \"[kutipan persis dari transcript di titik START]\"",
-        "- KUTIPAN AKHIR: \"[kutipan persis dari transcript di titik END]\"",
+        "- KONTEKS: [ringkasan singkat isi yang diperiksa dari video]",
         "",
         "SATU COMMAND YT-DLP",
         "(Hanya jika ada clip terpilih. JANGAN tampilkan bagian ini jika TIDAK ADA KLIP LAYAK)",
@@ -620,72 +604,23 @@ def build_gemini_prompt(groups, source_url=""):
         "",
     ]
 
-    total_raw_transcript_chars = 0
-    total_deduped_transcript_chars = 0
-
     if not groups:
         lines.append("(Tidak ada kelompok kandidat ditemukan)")
     else:
         for g_idx, group in enumerate(groups, 1):
-            g_start = min(c["context_start"] for c in group)
-            g_end = max(c["context_end"] for c in group)
             lines.append(
-                f"--- GROUP {g_idx} ({len(group)} kandidat, Rentang Konteks: {format_time(g_start)} - {format_time(g_end)} / {g_start:.1f}s - {g_end:.1f}s) ---"
+                f"--- GROUP {g_idx} ({len(group)} kandidat) ---"
             )
-
-            # Metadata candidate dibuat ringkas, satu baris
-            raw_group_chars = 0
-            unique_segments = {}
 
             for c in group:
                 lines.append(
-                    f"CANDIDATE {c['id']}: ANCHOR {c['anchor_start']:.3f}-{c['anchor_end']:.3f} | AVAILABLE_CONTEXT {c['context_start']:.3f}-{c['context_end']:.3f} | PREFILTER_FINAL_MARKER {c.get('prefilter_marker') if c.get('prefilter_marker') else 'NONE'} | SAFE_START_BOUNDARIES {c.get('safe_start_boundaries', [])} | SAFE_END_BOUNDARIES {c.get('safe_end_boundaries', [])}"
+                    f"CANDIDATE {c['id']}: START {c['anchor_start']:.3f} | END {c['anchor_end']:.3f}"
                 )
-                c_text = c.get("text", "").strip()
-                raw_group_chars += len(c_text)
 
-                for line in c_text.splitlines():
-                    line_clean = line.strip()
-                    if not line_clean:
-                        continue
-                    m = SEGMENT_RE.match(line_clean)
-                    if m:
-                        key = (float(m.group(1)), float(m.group(2)), m.group(3).strip())
-                        if key not in unique_segments:
-                            unique_segments[key] = (key[0], key[1], line_clean)
-                    else:
-                        key = (0.0, 0.0, line_clean)
-                        if key not in unique_segments:
-                            unique_segments[key] = (0.0, 0.0, line_clean)
-
-            # Satu timeline TRANSCRIPT deduplicated per GROUP, diurutkan berdasarkan start
-            sorted_segments = sorted(unique_segments.values(), key=lambda x: (x[0], x[1]))
-            deduped_text = "\n".join(seg[2] for seg in sorted_segments)
-            deduped_group_chars = len(deduped_text)
-
-            total_raw_transcript_chars += raw_group_chars
-            total_deduped_transcript_chars += deduped_group_chars
-
-            # Diagnostic karakter transcript per GROUP
-            print(
-                f"[DIAGNOSTIC] GROUP {g_idx}: "
-                f"chars transcript sebelum dedup={raw_group_chars}, "
-                f"chars sesudah dedup={deduped_group_chars}"
-            )
-
-            lines.extend([
-                "TRANSCRIPT:",
-                deduped_text,
-                "",
-            ])
+            lines.append("")
 
     final_prompt = "\n".join(lines)
 
-    # Diagnostic total prompt chars
-    print(
-        f"[DIAGNOSTIC] total prompt chars={len(final_prompt)} "
-        f"(total transcript sebelum dedup={total_raw_transcript_chars}, "
-        f"sesudah dedup={total_deduped_transcript_chars})"
-    )
+    print(f"[DIAGNOSTIC] total prompt chars={len(final_prompt)}")
 
     return final_prompt
