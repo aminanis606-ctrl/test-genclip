@@ -11,6 +11,10 @@ SRT_TIME_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$"
 )
 
+TERMINAL_BOUNDARY_RE = re.compile(
+    r"""[.!?](?:['")\]]*)$"""
+)
+
 SIGNALS = re.compile(
     r"\b("
     r"karena|ternyata|tetapi|tapi|namun|akhirnya|"
@@ -95,6 +99,67 @@ def parse(transcript):
     return segments
 
 
+def is_terminal_boundary(text):
+    normalized = " ".join(str(text).split()).strip()
+    return bool(TERMINAL_BOUNDARY_RE.search(normalized))
+
+
+def build_prefilter_marker(segments, anchor_start, anchor_end):
+    safe_starts = []
+    safe_ends = []
+
+    if segments:
+        safe_starts.append(round(segments[0]["start"], 3))
+
+    for index, segment in enumerate(segments):
+        if not is_terminal_boundary(segment["text"]):
+            continue
+
+        safe_ends.append(round(segment["end"], 3))
+
+        if index + 1 < len(segments):
+            safe_starts.append(
+                round(segments[index + 1]["start"], 3)
+            )
+
+    safe_starts = sorted(set(safe_starts))
+    safe_ends = sorted(set(safe_ends))
+
+    start_options = [
+        value
+        for value in safe_starts
+        if value <= anchor_start + 1e-6
+    ]
+
+    end_options = [
+        value
+        for value in safe_ends
+        if value >= anchor_end - 1e-6
+    ]
+
+    if not start_options or not end_options:
+        return None, safe_starts, safe_ends
+
+    marker_start = start_options[-1]
+
+    for marker_end in end_options:
+        duration = marker_end - marker_start
+
+        if duration < 25.0:
+            continue
+
+        if duration > 70.0:
+            break
+
+        return {
+            "start": marker_start,
+            "end": marker_end,
+            "duration": round(duration, 3),
+        }, safe_starts, safe_ends
+
+    return None, safe_starts, safe_ends
+
+
 def score(segment):
     text = segment["text"]
     words = len(text.split())
@@ -154,6 +219,24 @@ def find_candidates(transcript, limit=None):
         start = max(0.0, anchor_start - before)
         end = anchor_end + after
 
+        prefilter_marker, safe_starts, safe_ends = (
+            build_prefilter_marker(
+                segments,
+                anchor_start,
+                anchor_end,
+            )
+        )
+
+        if prefilter_marker:
+            start = min(
+                start,
+                prefilter_marker["start"]
+            )
+            end = max(
+                end,
+                prefilter_marker["end"]
+            )
+
         context = [
             s for s in segments
             if s["end"] >= start and s["start"] <= end
@@ -164,6 +247,9 @@ def find_candidates(transcript, limit=None):
             "anchor_end": anchor_end,
             "context_start": start,
             "context_end": end,
+            "prefilter_marker": prefilter_marker,
+            "safe_start_boundaries": safe_starts,
+            "safe_end_boundaries": safe_ends,
             "score": value,
             "text": "\n".join(
                 s["raw"] for s in context
@@ -261,6 +347,9 @@ def build_gemini_prompt(groups, source_url=""):
                     f"CANDIDATE {c['id']}",
                     f"ANCHOR: {c['anchor_start']:.3f} - {c['anchor_end']:.3f} ({format_time(c['anchor_start'])} - {format_time(c['anchor_end'])})",
                     f"AVAILABLE_CONTEXT: {c['context_start']:.3f} - {c['context_end']:.3f} ({format_time(c['context_start'])} - {format_time(c['context_end'])})",
+                    f"PREFILTER_FINAL_MARKER: {c['prefilter_marker'] if c['prefilter_marker'] else 'NONE'}",
+                    f"SAFE_START_BOUNDARIES: {c['safe_start_boundaries']}",
+                    f"SAFE_END_BOUNDARIES: {c['safe_end_boundaries']}",
                     "TRANSCRIPT:",
                     c.get("text", "").strip(),
                     "",
