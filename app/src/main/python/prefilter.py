@@ -385,140 +385,110 @@ def format_time(seconds):
     return f"{m:02d}:{s:02d}"
 
 
-def _build_story_window(segments, anchor_index, min_seconds=25.0, max_seconds=70.0):
-    """
-    Build a bounded story neighborhood around a scored anchor.
-
-    The anchor remains the lexical signal, while the window represents the
-    surrounding story material that Gemini can inspect for setup/payoff.
-    Prefer complete transcript segments and natural punctuation boundaries.
-    """
+def _build_story_window(
+    segments,
+    anchor_index,
+    min_seconds=25.0,
+    max_seconds=70.0,
+):
+    """Build a hard-bounded narrative neighborhood around an anchor."""
     if not segments:
         return 0.0, 0.0
 
     anchor = segments[anchor_index]
-    start = float(anchor["start"])
-    end = float(anchor["end"])
+    anchor_start = float(anchor["start"])
+    anchor_end = float(anchor["end"])
 
-    # First expand naturally around the anchor until the minimum useful
-    # story duration is reached.
-    left = anchor_index
-    right = anchor_index
+    source_start = float(segments[0]["start"])
+    source_end = max(float(segment["end"]) for segment in segments)
 
-    while end - start < min_seconds:
-        expanded = False
+    center = (anchor_start + anchor_end) / 2.0
+    target = min(45.0, max_seconds)
 
-        if left > 0:
-            previous = segments[left - 1]
-            gap = start - float(previous["end"])
+    start = center - target / 2.0
+    end = start + target
 
-            if gap <= 1.5:
-                candidate_start = float(previous["start"])
-                if end - candidate_start <= max_seconds:
-                    left -= 1
-                    start = candidate_start
-                    expanded = True
+    if start < source_start:
+        start = source_start
+        end = min(source_end, start + target)
 
-        if end - start >= min_seconds:
-            break
+    if end > source_end:
+        end = source_end
+        start = max(source_start, end - target)
 
-        if right + 1 < len(segments):
-            following = segments[right + 1]
-            gap = float(following["start"]) - end
+    if end - start < min_seconds:
+        available = source_end - source_start
 
-            if gap <= 1.5:
-                candidate_end = float(following["end"])
-                if candidate_end - start <= max_seconds:
-                    right += 1
-                    end = candidate_end
-                    expanded = True
+        if available <= max_seconds:
+            start = source_start
+            end = source_end
+        else:
+            start = max(source_start, center - min_seconds / 2.0)
+            end = min(source_end, start + min_seconds)
 
-        if not expanded:
-            break
+            if end - start < min_seconds:
+                end = min(source_end, end)
+                start = max(source_start, end - min_seconds)
 
-    # Once the minimum is reached, allow a little more context when the
-    # next segment completes the current thought, but never exceed 70s.
-    while right + 1 < len(segments):
-        following = segments[right + 1]
-        candidate_end = float(following["end"])
-        gap = float(following["start"]) - end
+    if end - start > max_seconds:
+        end = start + max_seconds
 
-        if gap > 1.5 or candidate_end - start > max_seconds:
-            break
-
-        current = segments[right]
-        current_text = current["text"].strip()
-
-        # If the current segment does not end terminally, include the next
-        # segment because the thought is structurally incomplete.
-        if not is_terminal_boundary(current_text):
-            right += 1
-            end = candidate_end
-            continue
-
-        break
+        if end > source_end:
+            end = source_end
+            start = max(source_start, end - max_seconds)
 
     return round(start, 3), round(end, 3)
 
 
-def _story_window_score(segments, start, end, anchor_score):
-    """Score the completeness/signal density of a story neighborhood."""
+def _story_window_score(
+    segments,
+    start,
+    end,
+    anchor_score,
+    min_seconds=25.0,
+    max_seconds=70.0,
+):
+    """Score bounded story context using aggregate narrative signals."""
     window = [
         segment
         for segment in segments
-        if segment["end"] >= start and segment["start"] <= end
+        if segment["end"] >= start
+        and segment["start"] <= end
     ]
 
     if not window:
-        return anchor_score
+        return float(anchor_score)
 
-    score_value = float(anchor_score)
+    value = float(anchor_score)
+    text = " ".join(segment["text"] for segment in window)
 
-    signal_count = sum(
-        1 for segment in window
-        if SIGNALS.search(segment["text"])
-    )
-    financial_count = sum(
-        1 for segment in window
-        if FINANCIAL_RE.search(segment["text"])
-    )
-    personal_count = sum(
-        1 for segment in window
-        if PERSONAL_EXP_RE.search(segment["text"])
-    )
-    transformation_count = sum(
-        1 for segment in window
-        if TRANSFORMATION_RE.search(segment["text"])
-    )
-    problem_solution_count = sum(
-        1 for segment in window
-        if PROBLEM_SOLUTION_RE.search(segment["text"])
-    )
+    for pattern, weight, cap in (
+        (SIGNALS, 0.75, 5),
+        (FINANCIAL_RE, 1.0, 2),
+        (PERSONAL_EXP_RE, 1.0, 2),
+        (TRANSFORMATION_RE, 1.25, 2),
+        (PROBLEM_SOLUTION_RE, 1.25, 2),
+        (EXTREME_EXP_RE, 0.75, 2),
+        (STRONG_OPINION_RE, 0.5, 2),
+    ):
+        value += min(len(pattern.findall(text)), cap) * weight
 
-    # Multiple related signals are stronger evidence of a story than one
-    # isolated keyword hit.
-    score_value += min(signal_count, 4) * 1.5
-    score_value += min(financial_count, 2) * 1.0
-    score_value += min(personal_count, 2) * 1.0
-    score_value += min(transformation_count, 2) * 1.5
-    score_value += min(problem_solution_count, 2) * 1.5
-
-    # Reward windows that contain both setup and a later terminal statement.
     if len(window) >= 2:
         if not is_terminal_boundary(window[0]["text"]):
-            score_value += 1.0
+            value += 1.0
 
-        if any(is_terminal_boundary(segment["text"]) for segment in window[1:]):
-            score_value += 1.0
+        if any(
+            is_terminal_boundary(segment["text"])
+            for segment in window[1:]
+        ):
+            value += 1.0
 
     duration = end - start
 
-    # A useful story neighborhood should normally fit inside the eventual
-    # 25-70 second clip range.
-    if 25.0 <= duration <= 70.0:
-        score_value += 2.0
+    if min_seconds <= duration <= max_seconds:
+        value += 1.5
 
-    return score_value
+    return round(value, 3)
 
 
 def find_candidates(transcript, limit=None):
@@ -527,8 +497,12 @@ def find_candidates(transcript, limit=None):
     if not segments:
         return []
 
+    duration_seconds = max(
+        float(segment["end"])
+        for segment in segments
+    )
+
     if limit is None:
-        duration_seconds = segments[-1]["end"]
         duration_minutes = duration_seconds / 60.0
         limit = max(20, int(duration_minutes * 1.5))
 
@@ -561,6 +535,8 @@ def find_candidates(transcript, limit=None):
             story_start,
             story_end,
             anchor_score,
+            min_seconds=25.0,
+            max_seconds=70.0,
         )
 
         prefilter_marker, safe_starts, safe_ends = (
@@ -589,7 +565,6 @@ def find_candidates(transcript, limit=None):
             ),
         })
 
-    # Highest-value story neighborhoods first.
     raw_candidates.sort(
         key=lambda item: (
             item["score"],
@@ -598,12 +573,10 @@ def find_candidates(transcript, limit=None):
         reverse=True,
     )
 
-    # Suppress redundant anchors whose story windows substantially overlap.
-    # Keep separate windows when they represent genuinely different regions.
     selected = []
 
     for candidate in raw_candidates:
-        overlap = False
+        duplicate = False
 
         for existing in selected:
             overlap_start = max(
@@ -619,6 +592,7 @@ def find_candidates(transcript, limit=None):
                 continue
 
             overlap_duration = overlap_end - overlap_start
+
             candidate_duration = (
                 candidate["context_end"]
                 - candidate["context_start"]
@@ -628,33 +602,32 @@ def find_candidates(transcript, limit=None):
                 - existing["context_start"]
             )
 
-            smaller_duration = min(
+            shorter_duration = min(
                 candidate_duration,
                 existing_duration,
             )
 
-            if smaller_duration > 0 and (
-                overlap_duration / smaller_duration >= 0.60
+            if (
+                shorter_duration > 0
+                and overlap_duration / shorter_duration >= 0.60
             ):
-                overlap = True
+                duplicate = True
                 break
 
-        if not overlap:
-            selected.append(candidate)
+        if duplicate:
+            continue
+
+        selected.append(candidate)
 
         if len(selected) >= limit:
             break
 
-    # Restore chronological order for stable IDs and grouping.
-    selected.sort(
-        key=lambda item: item["anchor_start"]
-    )
+    selected.sort(key=lambda item: item["anchor_start"])
 
     for index, candidate in enumerate(selected, 1):
         candidate["id"] = index
 
     return selected
-
 
 def group_candidates(candidates):
     """Group candidates into transitive overlapping context components."""
