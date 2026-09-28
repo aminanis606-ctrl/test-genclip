@@ -230,8 +230,12 @@ def format_time(seconds):
     return f"{m:02d}:{s:02d}"
 
 
-def find_candidates(transcript, limit=20):
+def find_candidates(transcript, limit=None):
     segments = parse(transcript)
+    if limit is None:
+        duration_seconds = segments[-1]["end"] if segments else 0.0
+        duration_minutes = duration_seconds / 60.0
+        limit = max(20, int(duration_minutes * 1.5))
     candidates = []
 
     for index, segment in enumerate(segments):
