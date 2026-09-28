@@ -11,6 +11,10 @@ SRT_TIME_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$"
 )
 
+TERMINAL_BOUNDARY_RE = re.compile(
+    r"""[.!?](?:['")\]]*)$"""
+)
+
 SIGNALS = re.compile(
     r"\b("
     r"karena|ternyata|tetapi|tapi|namun|akhirnya|"
@@ -161,6 +165,157 @@ def parse(transcript):
     return segments
 
 
+def is_terminal_boundary(text):
+    normalized = " ".join(str(text).split()).strip()
+    return bool(TERMINAL_BOUNDARY_RE.search(normalized))
+
+
+def _safe_start_boundaries(segments):
+    """
+    Return segment starts that are not inside any earlier overlapping
+    transcript segment.
+
+    A later ASR segment may begin before an earlier segment has ended.
+    Such a start is unsafe because it can cut through an ongoing thought.
+    """
+    safe_starts = []
+    max_previous_end = None
+
+    for segment in segments:
+        start = float(segment["start"])
+        end = float(segment["end"])
+
+        if max_previous_end is None or start >= max_previous_end - 1e-6:
+            safe_starts.append(round(start, 3))
+
+        if max_previous_end is None:
+            max_previous_end = end
+        else:
+            max_previous_end = max(max_previous_end, end)
+
+    return sorted(set(safe_starts))
+
+
+def _safe_end_for_terminal(segments, index):
+    """
+    Extend a terminal punctuation boundary through every later segment
+    that overlaps the current boundary.
+    """
+    boundary = float(segments[index]["end"])
+
+    for later in segments[index + 1:]:
+        if float(later["start"]) < boundary - 1e-6:
+            boundary = max(boundary, float(later["end"]))
+            continue
+
+        break
+
+    return round(boundary, 3)
+
+
+def _build_structural_context(segments, anchor_index, max_seconds=120.0):
+    """
+    Build bounded transcript context using physical timeline gaps.
+
+    Without diarization/VAD, transcript gaps are the strongest structural
+    signal currently available. A gap >1.5s is treated as a hard context
+    break. The result is capped at max_seconds.
+    """
+    if not segments:
+        return 0.0, 0.0
+
+    anchor = segments[anchor_index]
+    start = float(anchor["start"])
+    end = float(anchor["end"])
+
+    for index in range(anchor_index - 1, -1, -1):
+        candidate_start = float(segments[index]["start"])
+        candidate_end = float(segments[index]["end"])
+        gap = start - candidate_end
+
+        if gap > 1.5:
+            break
+
+        if end - candidate_start > max_seconds:
+            break
+
+        start = candidate_start
+
+    for index in range(anchor_index + 1, len(segments)):
+        candidate_start = float(segments[index]["start"])
+        candidate_end = float(segments[index]["end"])
+        gap = candidate_start - end
+
+        if gap > 1.5:
+            break
+
+        if candidate_end - start > max_seconds:
+            break
+
+        end = candidate_end
+
+    return round(start, 3), round(end, 3)
+
+
+def build_prefilter_marker(segments, anchor_start, anchor_end):
+    """
+    Build deterministic physical/lexical boundaries for Gemini.
+
+    PREFILTER does not decide the final clip duration. It only exposes
+    boundaries that are safe with respect to ASR overlap and terminal
+    punctuation. Gemini remains responsible for story completeness and
+    the final 25-70 second selection.
+    """
+    safe_starts = _safe_start_boundaries(segments)
+    safe_ends = []
+
+    for index, segment in enumerate(segments):
+        if not is_terminal_boundary(segment["text"]):
+            continue
+
+        terminal_end = _safe_end_for_terminal(segments, index)
+
+        # A punctuation mark followed immediately by another segment is
+        # a weak boundary unless the next segment actually begins after
+        # a small natural pause.
+        next_index = index + 1
+        if next_index < len(segments):
+            next_start = float(segments[next_index]["start"])
+            raw_end = float(segment["end"])
+            gap = next_start - raw_end
+
+            if gap < 0.2 and next_start >= raw_end - 1e-6:
+                continue
+
+        safe_ends.append(terminal_end)
+
+    safe_ends = sorted(set(safe_ends))
+
+    start_options = [
+        value
+        for value in safe_starts
+        if value <= anchor_start + 1e-6
+    ]
+
+    end_options = [
+        value
+        for value in safe_ends
+        if value >= anchor_end - 1e-6
+    ]
+
+    if not start_options or not end_options:
+        return None, safe_starts, safe_ends
+
+    marker_start = start_options[-1]
+    marker_end = end_options[0]
+
+    return {
+        "start": marker_start,
+        "end": marker_end,
+        "duration": round(marker_end - marker_start, 3),
+    }, safe_starts, safe_ends
+
+
 def score(segment, next_segment=None):
     text = segment["text"]
     words = len(text.split())
@@ -249,15 +404,29 @@ def find_candidates(transcript, limit=None):
         anchor_end = segment["end"]
         anchor_duration = anchor_end - anchor_start
 
-        context_budget = max(
-            0.0,
-            70.0 - anchor_duration
+        start, end = _build_structural_context(
+            segments,
+            index,
+            max_seconds=120.0,
         )
-        before = context_budget / 2.0
-        after = context_budget - before
 
-        start = max(0.0, anchor_start - before)
-        end = anchor_end + after
+        prefilter_marker, safe_starts, safe_ends = (
+            build_prefilter_marker(
+                segments,
+                anchor_start,
+                anchor_end,
+            )
+        )
+
+        if prefilter_marker:
+            start = min(
+                start,
+                prefilter_marker["start"]
+            )
+            end = max(
+                end,
+                prefilter_marker["end"]
+            )
 
         context = [
             s for s in segments
@@ -269,6 +438,9 @@ def find_candidates(transcript, limit=None):
             "anchor_end": anchor_end,
             "context_start": start,
             "context_end": end,
+            "prefilter_marker": prefilter_marker,
+            "safe_start_boundaries": safe_starts,
+            "safe_end_boundaries": safe_ends,
             "score": value,
             "text": "\n".join(
                 s["raw"] for s in context
@@ -383,29 +555,34 @@ def build_gemini_prompt(groups, source_url=""):
         "   - Jangan memotong clip yang masih koheren hanya agar durasinya lebih pendek.",
         "   - Jangan memperpanjang clip dengan materi yang tidak diperlukan hanya agar mendekati 70 detik.",
         "10. Jangan memilih kandidat hanya karena ANCHOR-nya memiliki score PREFILTER tinggi. Transcript dan konteks tetap menjadi dasar keputusan.",
+        "11. PREFILTER_FINAL_MARKER adalah baseline deterministic dari PREFILTER dan harus dibandingkan dengan keputusan Gemini.",
+        "12. SAFE_START_BOUNDARIES dan SAFE_END_BOUNDARIES adalah batas waktu yang diizinkan.",
+        "13. START HARUS sama persis dengan salah satu SAFE_START_BOUNDARIES.",
+        "14. END HARUS sama persis dengan salah satu SAFE_END_BOUNDARIES.",
+        "15. Jangan membuat START atau END di luar boundary yang diberikan, meskipun secara semantik terlihat lebih baik.",
         "",
         "=== ATURAN COMMAND YT-DLP ===",
-        "11. Jika ada satu atau lebih clip terpilih, Anda HARUS menghasilkan TEPAT SATU command shell yt-dlp untuk SEMUA clip tersebut.",
+        "16. Jika ada satu atau lebih clip terpilih, Anda HARUS menghasilkan TEPAT SATU command shell yt-dlp untuk SEMUA clip tersebut.",
         "    Satu response = satu command yt-dlp.",
-        "12. Gunakan SATU URL YouTube dan SATU invocation yt-dlp.",
-        "13. Untuk SETIAP clip terpilih, gunakan satu:",
+        "17. Gunakan SATU URL YouTube dan SATU invocation yt-dlp.",
+        "18. Untuk SETIAP clip terpilih, gunakan satu:",
         '    --download-sections "*START-END"',
         '    Contoh dua clip: --download-sections "*00:02:46-00:03:16" --download-sections "*00:07:44-00:08:14"',
         "    Jangan membuat command yt-dlp terpisah untuk masing-masing clip.",
-        "14. Command WAJIB menggunakan format kompatibel ClipClip:",
+        "19. Command WAJIB menggunakan format kompatibel ClipClip:",
         '    -f "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]"',
         '    JANGAN menggunakan "bv*+ba/b" atau "-f 134".',
-        "15. Command WAJIB menggunakan:",
+        "20. Command WAJIB menggunakan:",
         "    --merge-output-format mp4",
-        "16. Output diarahkan ke:",
+        "21. Output diarahkan ke:",
         "    /storage/emulated/0/Movies/GenClip/",
-        "17. Kontrak Filename:",
+        "22. Kontrak Filename:",
         '    - JANGAN mengandalkan "%(title)s" milik YouTube sebagai judul clip.',
         '    - Judul clip yang dibuat Gemini harus menjadi bagian dari nama output.',
         '    - Judul harus disanitasi: Karakter terlarang filesystem / \\ : * ? " < > | TIDAK BOLEH muncul; ganti dengan "_" dan rapikan spasi berlebih.',
         '    - Gunakan pola nama file: JudulClip_START-END.mp4 dengan timestamp section dari yt-dlp agar setiap clip memiliki nama unik dan tidak saling menimpa:',
         '      -o "/storage/emulated/0/Movies/GenClip/[JudulClipSanitasi]_%(section_start)s-%(section_end)s.%(ext)s"',
-        "18. Anda HANYA menghasilkan command, BUKAN menjalankannya. Jangan buat command untuk clip yang ditolak.",
+        "23. Anda HANYA menghasilkan command, BUKAN menjalankannya. Jangan buat command untuk clip yang ditolak.",
         "",
         "=== FORMAT RESPONSE GEMINI ===",
         "Respons Anda HARUS mengikuti urutan berikut:",
@@ -462,7 +639,7 @@ def build_gemini_prompt(groups, source_url=""):
 
             for c in group:
                 lines.append(
-                    f"CANDIDATE {c['id']}: ANCHOR {c['anchor_start']:.3f}-{c['anchor_end']:.3f} | AVAILABLE_CONTEXT {c['context_start']:.3f}-{c['context_end']:.3f}"
+                    f"CANDIDATE {c['id']}: ANCHOR {c['anchor_start']:.3f}-{c['anchor_end']:.3f} | AVAILABLE_CONTEXT {c['context_start']:.3f}-{c['context_end']:.3f} | PREFILTER_FINAL_MARKER {c.get('prefilter_marker') if c.get('prefilter_marker') else 'NONE'} | SAFE_START_BOUNDARIES {c.get('safe_start_boundaries', [])} | SAFE_END_BOUNDARIES {c.get('safe_end_boundaries', [])}"
                 )
                 c_text = c.get("text", "").strip()
                 raw_group_chars += len(c_text)
