@@ -950,7 +950,6 @@ def build_gemini_prompt(video_url, groups):
                     f"DURASI: {candidate['candidate_duration']:.1f}",
                     f"STORY UNIT: {candidate['story_unit']}",
                     f"STRUCTURAL SCORE: {candidate['score']:.3f}",
-                    f"TEXT: {candidate['text']}",
                 ]
             )
 
