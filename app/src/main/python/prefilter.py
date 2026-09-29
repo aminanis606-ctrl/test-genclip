@@ -897,18 +897,12 @@ def build_gemini_prompt(video_url, groups):
     ]
 
     for group_number, group in enumerate(groups, start=1):
-        lines.append(f"GROUP {group_number}")
-
         for candidate_number, candidate in enumerate(group, start=1):
-            lines.extend(
-                [
-                    f"CANDIDATE {candidate_number}",
-                    f"START: {candidate['candidate_start']:.3f}",
-                    f"END: {candidate['candidate_end']:.3f}",
-                    f"DURASI: {candidate['candidate_duration']:.1f}",
-                    f"STORY UNIT: {candidate['story_unit']}",
-                    f"STRUCTURAL SCORE: {candidate['score']:.3f}",
-                ]
+            lines.append(
+                f"G{group_number} C{candidate_number} | "
+                f"{candidate['candidate_start']:.3f}-{candidate['candidate_end']:.3f} | "
+                f"{candidate['candidate_duration']:.1f}s | "
+                f"SCORE {candidate['score']:.3f}"
             )
 
     return "\n".join(lines)
