@@ -880,6 +880,8 @@ def build_gemini_prompt(video_url, groups):
         "- END harus mempertahankan payoff/reveal/result bila diperlukan.",
         "",
         "ATURAN M4:",
+        "- Abaikan opening/intro video saat memilih kandidat.",
+        "- Jangan memilih bagian yang hanya berisi salam/pembukaan channel, perkenalan host/tamu, logo/branding, sponsor/iklan, CTA subscribe/follow/like, atau housekeeping/pengantar sebelum substansi cerita dimulai.",
         "- Evaluasi SETIAP kandidat.",
         "- Jangan menggunakan label STRONG / WEAK / REJECT.",
         "- Berikan VIRAL SCORE 0–100 untuk setiap kandidat.",
