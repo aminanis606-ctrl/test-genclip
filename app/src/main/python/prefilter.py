@@ -93,6 +93,12 @@ QUESTION_HOOK_RE = re.compile(
     re.I,
 )
 
+OPENING_RE = re.compile(
+    r"\b(sebelum video|video ini dimulai|selamat datang|welcome|qr code|subscribe|like|follow|website)\b",
+    re.I,
+)
+
+
 BAD = re.compile(
     r"\b("
     r"subscribe|like|comment|follow|jangan lupa|"
@@ -170,47 +176,93 @@ def is_terminal_boundary(text):
     return bool(TERMINAL_BOUNDARY_RE.search(normalized))
 
 
-def _safe_start_boundaries(segments):
-    """
-    Return segment starts that are not inside any earlier overlapping
-    transcript segment.
+def _token_set(text):
+    stopwords = {
+        "yang", "dan", "dari", "dengan", "untuk", "atau", "ini", "itu",
+        "jadi", "kan", "aku", "saya", "lu", "gua", "kita", "dia", "ada",
+        "apa", "nih", "ya", "lah", "kok", "tuh", "si", "ke", "di", "pada",
+        "nya", "gue", "bang", "oke", "the", "and", "for", "with", "that",
+        "this", "you", "are", "was", "but",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-z0-9áéíóúü]+", str(text).lower())
+        if len(token) > 2 and token not in stopwords
+    }
 
-    A later ASR segment may begin before an earlier segment has ended.
-    Such a start is unsafe because it can cut through an ongoing thought.
-    """
-    safe_starts = []
-    max_previous_end = None
 
-    for segment in segments:
-        start = float(segment["start"])
-        end = float(segment["end"])
+def _lexical_overlap(left_text, right_text):
+    left = _token_set(left_text)
+    right = _token_set(right_text)
 
-        if max_previous_end is None or start >= max_previous_end - 1e-6:
-            safe_starts.append(round(start, 3))
+    if not left:
+        return 1.0
 
-        if max_previous_end is None:
-            max_previous_end = end
-        else:
-            max_previous_end = max(max_previous_end, end)
-
-    return sorted(set(safe_starts))
+    return len(left & right) / len(left)
 
 
 def _safe_end_for_terminal(segments, index):
     """
-    Extend a terminal punctuation boundary through every later segment
-    that overlaps the current boundary.
+    Keep a terminal boundary, extending only through overlapping ASR cues
+    that are lexically duplicative. Stop when overlapping text introduces
+    new content.
     """
     boundary = float(segments[index]["end"])
+    base_text = segments[index]["text"]
 
     for later in segments[index + 1:]:
-        if float(later["start"]) < boundary - 1e-6:
-            boundary = max(boundary, float(later["end"]))
+        later_start = float(later["start"])
+        later_end = float(later["end"])
+
+        if later_start >= boundary - 1e-6:
+            break
+
+        if later_end <= boundary + 1e-6:
+            continue
+
+        if _lexical_overlap(base_text, later["text"]) >= 0.45:
+            boundary = max(boundary, later_end)
             continue
 
         break
 
     return round(boundary, 3)
+
+
+def _safe_end_boundaries(segments):
+    safe_ends = []
+
+    for index, segment in enumerate(segments):
+        if not is_terminal_boundary(segment["text"]):
+            continue
+
+        boundary = _safe_end_for_terminal(segments, index)
+
+        if boundary > float(segment["start"]):
+            safe_ends.append(boundary)
+
+    return sorted(set(safe_ends))
+
+
+def _safe_start_boundaries(segments):
+    """
+    For overlapping ASR subtitles, a safe START is the first cue beginning
+    at or after a verified terminal boundary. Do not require the new cue to
+    be outside the entire overlap chain.
+    """
+    if not segments:
+        return []
+
+    safe_ends = _safe_end_boundaries(segments)
+    safe_starts = [round(float(segments[0]["start"]), 3)]
+
+    for boundary in safe_ends:
+        for segment in segments:
+            if float(segment["start"]) >= boundary - 1e-6:
+                safe_starts.append(round(float(segment["start"]), 3))
+                break
+
+    return sorted(set(safe_starts))
 
 
 def _build_structural_context(segments, anchor_index, max_seconds=120.0):
@@ -386,24 +438,179 @@ def format_time(seconds):
 
 
 
-def _discover_story_units(segments, gap_seconds=1.5):
-    """Discover contiguous narrative units from transcript continuity."""
+def _topic_similarity(left_segments, right_segments):
+    left_counts = {}
+    right_counts = {}
+
+    for segment in left_segments:
+        for token in _token_set(segment["text"]):
+            left_counts[token] = left_counts.get(token, 0) + 1
+
+    for segment in right_segments:
+        for token in _token_set(segment["text"]):
+            right_counts[token] = right_counts.get(token, 0) + 1
+
+    if not left_counts or not right_counts:
+        return 0.0
+
+    dot = sum(
+        left_counts[token] * right_counts.get(token, 0)
+        for token in left_counts
+    )
+
+    left_norm = sum(
+        value * value for value in left_counts.values()
+    ) ** 0.5
+
+    right_norm = sum(
+        value * value for value in right_counts.values()
+    ) ** 0.5
+
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+
+    return dot / (left_norm * right_norm)
+
+
+def _discover_story_units(segments, window_size=8):
+    """
+    M2 Story Discovery.
+
+    Detect local lexical-cohesion valleys, then snap each topic boundary
+    forward to a safe transcript START. This discovers structural story
+    units; it does not score virality and does not impose a duration target.
+    """
     if not segments:
         return []
 
+    safe_starts = _safe_start_boundaries(segments)
+    safe_ends = _safe_end_boundaries(segments)
+
+    if not safe_starts or not safe_ends:
+        return [(0, len(segments) - 1)]
+
+    if len(segments) < (window_size * 2) + 1:
+        return [(0, len(segments) - 1)]
+
+    scores = []
+
+    for index in range(
+        window_size,
+        len(segments) - window_size,
+    ):
+        left = segments[index - window_size:index]
+        right = segments[index:index + window_size]
+
+        scores.append(
+            {
+                "index": index,
+                "similarity": _topic_similarity(left, right),
+            }
+        )
+
+    if len(scores) < 3:
+        return [(0, len(segments) - 1)]
+
+    mean = sum(
+        item["similarity"] for item in scores
+    ) / len(scores)
+
+    variance = sum(
+        (item["similarity"] - mean) ** 2
+        for item in scores
+    ) / len(scores)
+
+    threshold = mean - (1.5 * (variance ** 0.5))
+
+    boundary_starts = [safe_starts[0]]
+
+    for position in range(1, len(scores) - 1):
+        current = scores[position]
+        previous = scores[position - 1]
+        following = scores[position + 1]
+
+        if current["similarity"] > threshold:
+            continue
+
+        if current["similarity"] > previous["similarity"]:
+            continue
+
+        if current["similarity"] > following["similarity"]:
+            continue
+
+        raw_start = float(
+            segments[current["index"]]["start"]
+        )
+
+        snapped = next(
+            (
+                value
+                for value in safe_starts
+                if value >= raw_start - 1e-6
+            ),
+            safe_starts[-1],
+        )
+
+        if snapped <= boundary_starts[-1] + 1e-6:
+            continue
+
+        boundary_starts.append(snapped)
+
+    boundary_starts = sorted(set(boundary_starts))
+
+    if boundary_starts[-1] != safe_starts[-1]:
+        boundary_starts.append(safe_starts[-1])
+
     units = []
-    unit_start = 0
 
-    for index in range(1, len(segments)):
-        previous_end = float(segments[index - 1]["end"])
-        current_start = float(segments[index]["start"])
+    for unit_number, start in enumerate(boundary_starts):
+        if unit_number + 1 < len(boundary_starts):
+            next_start = boundary_starts[unit_number + 1]
 
-        if current_start - previous_end > gap_seconds:
-            units.append((unit_start, index - 1))
-            unit_start = index
+            candidate_ends = [
+                value
+                for value in safe_ends
+                if value < next_start - 1e-6
+            ]
 
-    units.append((unit_start, len(segments) - 1))
-    return units
+            end_time = (
+                candidate_ends[-1]
+                if candidate_ends
+                else None
+            )
+        else:
+            end_time = safe_ends[-1]
+
+        if end_time is None or end_time <= start:
+            continue
+
+        unit_start = next(
+            (
+                index
+                for index, segment in enumerate(segments)
+                if abs(
+                    float(segment["start"]) - start
+                ) < 0.001
+            ),
+            None,
+        )
+
+        unit_end = None
+
+        for index, segment in enumerate(segments):
+            if float(segment["end"]) <= end_time + 1e-6:
+                unit_end = index
+
+        if (
+            unit_start is None
+            or unit_end is None
+            or unit_end < unit_start
+        ):
+            continue
+
+        units.append((unit_start, unit_end))
+
+    return units or [(0, len(segments) - 1)]
 
 
 def _candidate_windows_in_story_unit(
@@ -413,32 +620,21 @@ def _candidate_windows_in_story_unit(
     min_seconds=30.0,
     max_seconds=90.0,
 ):
-    """Generate safe 30–90s candidate windows inside one Story Unit."""
+    """Generate all structurally safe 30–90s windows in one Story Unit."""
     unit_segments = segments[unit_start : unit_end + 1]
 
     if not unit_segments:
         return []
 
     safe_starts = _safe_start_boundaries(unit_segments)
+    safe_ends = _safe_end_boundaries(unit_segments)
+
     windows = []
 
-    for relative_start in safe_starts:
-        candidate_start = float(relative_start)
-
-        start_index = None
-        for index, segment in enumerate(unit_segments):
-            if abs(float(segment["start"]) - candidate_start) < 0.001:
-                start_index = index
-                break
-
-        if start_index is None:
-            continue
-
-        for relative_end in range(start_index, len(unit_segments)):
-            candidate_end = _safe_end_for_terminal(
-                unit_segments,
-                relative_end,
-            )
+    for candidate_start in safe_starts:
+        for candidate_end in safe_ends:
+            if candidate_end <= candidate_start:
+                continue
 
             duration = candidate_end - candidate_start
 
@@ -446,7 +642,7 @@ def _candidate_windows_in_story_unit(
                 continue
 
             if duration > max_seconds:
-                break
+                continue
 
             windows.append(
                 (
@@ -541,6 +737,21 @@ def find_candidates(transcript_text, duration_minutes=None):
             if key in seen:
                 continue
 
+            text = _candidate_text(
+                segments,
+                candidate_start,
+                candidate_end,
+            )
+
+            if (
+                abs(
+                    candidate_start
+                    - float(segments[0]["start"])
+                ) < 0.001
+                and OPENING_RE.search(text[:500])
+            ):
+                continue
+
             seen.add(key)
 
             candidates.append(
@@ -564,11 +775,7 @@ def find_candidates(transcript_text, duration_minutes=None):
                         candidate_start,
                         candidate_end,
                     ),
-                    "text": _candidate_text(
-                        segments,
-                        candidate_start,
-                        candidate_end,
-                    ),
+                    "text": text,
                     "prefilter_marker": {
                         "start": candidate_start,
                         "end": candidate_end,
@@ -598,35 +805,37 @@ def find_candidates(transcript_text, duration_minutes=None):
                 candidate["candidate_start"],
                 existing["candidate_start"],
             )
-
             overlap_end = min(
                 candidate["candidate_end"],
                 existing["candidate_end"],
             )
-
-            overlap = max(0.0, overlap_end - overlap_start)
-
-            shorter = min(
-                candidate["candidate_end"]
-                - candidate["candidate_start"],
-                existing["candidate_end"]
-                - existing["candidate_start"],
+            overlap = max(
+                0.0,
+                overlap_end - overlap_start,
             )
 
-            if shorter > 0 and overlap / shorter >= 0.60:
+            shorter = min(
+                candidate["candidate_duration"],
+                existing["candidate_duration"],
+            )
+
+            duration_delta = abs(
+                candidate["candidate_duration"]
+                - existing["candidate_duration"]
+            )
+
+            if (
+                shorter > 0
+                and overlap / shorter >= 0.85
+                and duration_delta <= 8.0
+            ):
                 duplicate = True
                 break
 
         if not duplicate:
             deduped.append(candidate)
 
-    limit = (
-        max(20, int(duration_minutes * 1.5))
-        if duration_minutes
-        else 80
-    )
-
-    return deduped[:limit]
+    return deduped
 
 
 def group_candidates(candidates):
@@ -682,6 +891,9 @@ def build_gemini_prompt(video_url, groups):
         "- Nilai relatability.",
         "- Nilai surprising/counterintuitive element.",
         "- Nilai emotional/vulnerable element jika memang ada.",
+        "- Periksa langsung video YouTube pada timestamp kandidat; jangan menilai hanya dari TEXT M3.",
+        "- KUTIPAN AWAL dan KUTIPAN AKHIR harus exact dari transcript kandidat.",
+        "- JUDUL/TOPIK adalah metadata, bukan kutipan ucapan.",
         "- Jangan mengarang isi video.",
         "",
         "FORMAT EVALUASI:",
@@ -711,9 +923,12 @@ def build_gemini_prompt(video_url, groups):
         "",
         "Jika ada kandidat final, keluarkan SATU command yt-dlp.",
         "Satu URL/invocation saja.",
+        "Gunakan satu --download-sections \"*START-END\" untuk setiap clip terpilih dalam command yang sama.",
         'Gunakan -f "bv[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]"',
         "--merge-output-format mp4",
         "Output: /storage/emulated/0/Movies/GenClip/",
+        "Filename harus memakai JUDUL/TOPIK yang disanitasi + section timestamp.",
+        "Gunakan -o \"/storage/emulated/0/Movies/GenClip/[JudulClipSanitasi]_%(section_start)s-%(section_end)s.%(ext)s\"",
         "",
         "VIDEO:",
         video_url,

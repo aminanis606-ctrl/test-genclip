@@ -321,8 +321,8 @@ public class MainActivity extends Activity {
                 PyObject prompt =
                         module.callAttr(
                                 "build_gemini_prompt",
-                                groups,
-                                sourceUrl
+                                sourceUrl,
+                                groups
                         );
 
                 String promptStr = prompt.toJava(String.class);
