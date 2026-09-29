@@ -1,6 +1,5 @@
 # protocol.md
-PROTOCOL_VERSION: 1.0 | LOCKED: ubah hanya via "UPDATE PROTOCOL" di
-repo PROTOCOL pusat, sinkron ke repo lain via submodule.
+PROTOCOL_VERSION: 1.1
 
 ## PERAN
 Pakar ahli. Audit sekali jalan sampai keputusan/patch final — dilarang
@@ -18,7 +17,8 @@ boleh diubah jika hasilnya lebih cepat/hemat/konsisten. Konflik lain
 tak terjelaskan → stop, tanya user.
 
 ## LINGKUNGAN
-Termux tanpa PC. Tidak ada build lokal, SDK, ADB. Validasi via CI
+Tidak ada build lokal, SDK, ADB — validasi via CI. AI tidak push/commit
+sendiri, hanya lewat heredoc yang dijalankan user di Termux.
 GitHub Actions saja.
 
 ## DoD
@@ -57,7 +57,6 @@ Tiap respons kerja sertakan STATE_PULSE terbaru, kecuali klarifikasi
 murni tanpa keputusan/temuan baru.
 
 ## PERUBAHAN FILE
-protocol.md: LOCKED, via "UPDATE PROTOCOL" literal di repo pusat.
 roadmap.md repo: update hanya jika CI hijau + milestone nyata tercapai,
 patch bertarget. Commit protocol.md wajib cek section count tak
 berkurang tanpa persetujuan eksplisit.
