@@ -385,412 +385,357 @@ def format_time(seconds):
     return f"{m:02d}:{s:02d}"
 
 
-def _build_story_window(
-    segments,
-    anchor_index,
-    min_seconds=25.0,
-    max_seconds=70.0,
-):
-    """Build a hard-bounded narrative neighborhood around an anchor."""
+
+def _discover_story_units(segments, gap_seconds=1.5):
+    """Discover contiguous narrative units from transcript continuity."""
     if not segments:
-        return 0.0, 0.0
+        return []
 
-    anchor = segments[anchor_index]
-    anchor_start = float(anchor["start"])
-    anchor_end = float(anchor["end"])
+    units = []
+    unit_start = 0
 
-    source_start = float(segments[0]["start"])
-    source_end = max(float(segment["end"]) for segment in segments)
+    for index in range(1, len(segments)):
+        previous_end = float(segments[index - 1]["end"])
+        current_start = float(segments[index]["start"])
 
-    center = (anchor_start + anchor_end) / 2.0
-    target = min(45.0, max_seconds)
+        if current_start - previous_end > gap_seconds:
+            units.append((unit_start, index - 1))
+            unit_start = index
 
-    start = center - target / 2.0
-    end = start + target
-
-    if start < source_start:
-        start = source_start
-        end = min(source_end, start + target)
-
-    if end > source_end:
-        end = source_end
-        start = max(source_start, end - target)
-
-    if end - start < min_seconds:
-        available = source_end - source_start
-
-        if available <= max_seconds:
-            start = source_start
-            end = source_end
-        else:
-            start = max(source_start, center - min_seconds / 2.0)
-            end = min(source_end, start + min_seconds)
-
-            if end - start < min_seconds:
-                end = min(source_end, end)
-                start = max(source_start, end - min_seconds)
-
-    if end - start > max_seconds:
-        end = start + max_seconds
-
-        if end > source_end:
-            end = source_end
-            start = max(source_start, end - max_seconds)
-
-    return round(start, 3), round(end, 3)
+    units.append((unit_start, len(segments) - 1))
+    return units
 
 
-def _story_window_score(
+def _candidate_windows_in_story_unit(
     segments,
-    start,
-    end,
-    anchor_score,
-    min_seconds=25.0,
-    max_seconds=70.0,
+    unit_start,
+    unit_end,
+    min_seconds=30.0,
+    max_seconds=90.0,
 ):
-    """Score bounded story context using aggregate narrative signals."""
-    window = [
-        segment
-        for segment in segments
-        if segment["end"] >= start
-        and segment["start"] <= end
-    ]
+    """Generate safe 30–90s candidate windows inside one Story Unit."""
+    unit_segments = segments[unit_start : unit_end + 1]
 
-    if not window:
-        return float(anchor_score)
+    if not unit_segments:
+        return []
 
-    value = float(anchor_score)
-    text = " ".join(segment["text"] for segment in window)
+    safe_starts = _safe_start_boundaries(unit_segments)
+    windows = []
 
-    for pattern, weight, cap in (
-        (SIGNALS, 0.75, 5),
-        (FINANCIAL_RE, 1.0, 2),
-        (PERSONAL_EXP_RE, 1.0, 2),
-        (TRANSFORMATION_RE, 1.25, 2),
-        (PROBLEM_SOLUTION_RE, 1.25, 2),
-        (EXTREME_EXP_RE, 0.75, 2),
-        (STRONG_OPINION_RE, 0.5, 2),
-    ):
-        value += min(len(pattern.findall(text)), cap) * weight
+    for relative_start in safe_starts:
+        candidate_start = float(relative_start)
 
-    if len(window) >= 2:
-        if not is_terminal_boundary(window[0]["text"]):
-            value += 1.0
+        start_index = None
+        for index, segment in enumerate(unit_segments):
+            if abs(float(segment["start"]) - candidate_start) < 0.001:
+                start_index = index
+                break
 
-        if any(
-            is_terminal_boundary(segment["text"])
-            for segment in window[1:]
-        ):
-            value += 1.0
+        if start_index is None:
+            continue
 
+        for relative_end in range(start_index, len(unit_segments)):
+            candidate_end = _safe_end_for_terminal(
+                unit_segments,
+                relative_end,
+            )
+
+            duration = candidate_end - candidate_start
+
+            if duration < min_seconds:
+                continue
+
+            if duration > max_seconds:
+                break
+
+            windows.append(
+                (
+                    round(candidate_start, 3),
+                    round(candidate_end, 3),
+                    round(duration, 3),
+                )
+            )
+
+    return windows
+
+
+def _candidate_text(segments, start, end):
+    parts = []
+
+    for segment in segments:
+        segment_start = float(segment["start"])
+        segment_end = float(segment["end"])
+
+        if segment_end <= start:
+            continue
+
+        if segment_start >= end:
+            break
+
+        text = str(segment.get("text", "")).strip()
+
+        if text:
+            parts.append(text)
+
+    return " ".join(parts)
+
+
+def _structural_candidate_score(segments, start, end):
+    """Structural ranking only. Never a viral score."""
     duration = end - start
+    text = _candidate_text(segments, start, end)
 
-    if min_seconds <= duration <= max_seconds:
-        value += 1.5
+    score = 0.0
 
-    return round(value, 3)
+    if 30.0 <= duration <= 90.0:
+        score += 2.0
+
+    if re.search(r"[.!?]\s*$", text):
+        score += 1.0
+
+    if re.search(
+        r"\b(kenapa|mengapa|ternyata|tapi|namun|justru|sebenarnya|"
+        r"masalahnya|alasannya|akhirnya|bayangkan|kalau)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        score += 1.0
+
+    if re.search(
+        r"\b(saya|aku|kami|kita|pernah|merasa|takut|sedih|malu|"
+        r"gagal|berhasil|menyesal|bingung|marah|bahagia)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        score += 0.75
+
+    return round(score, 3)
 
 
-def find_candidates(transcript, limit=None):
-    segments = parse(transcript)
+def find_candidates(transcript_text, duration_minutes=None):
+    """M2 Story Discovery -> M3 structural 30–90s candidate gate."""
+    segments = parse(transcript_text)
 
     if not segments:
         return []
 
-    duration_seconds = max(
-        float(segment["end"])
-        for segment in segments
-    )
+    story_units = _discover_story_units(segments)
+    candidates = []
+    seen = set()
 
-    if limit is None:
-        duration_minutes = duration_seconds / 60.0
-        limit = max(20, int(duration_minutes * 1.5))
-
-    raw_candidates = []
-
-    for index, segment in enumerate(segments):
-        next_segment = (
-            segments[index + 1]
-            if index + 1 < len(segments)
-            else None
-        )
-
-        anchor_score = score(segment, next_segment)
-
-        if anchor_score <= 0:
-            continue
-
-        anchor_start = float(segment["start"])
-        anchor_end = float(segment["end"])
-
-        story_start, story_end = _build_story_window(
+    for unit_id, (unit_start, unit_end) in enumerate(
+        story_units,
+        start=1,
+    ):
+        windows = _candidate_windows_in_story_unit(
             segments,
-            index,
-            min_seconds=25.0,
-            max_seconds=70.0,
+            unit_start,
+            unit_end,
+            min_seconds=30.0,
+            max_seconds=90.0,
         )
 
-        window_score = _story_window_score(
-            segments,
-            story_start,
-            story_end,
-            anchor_score,
-            min_seconds=25.0,
-            max_seconds=70.0,
-        )
+        for candidate_start, candidate_end, duration in windows:
+            key = (candidate_start, candidate_end)
 
-        prefilter_marker, safe_starts, safe_ends = (
-            build_prefilter_marker(
-                segments,
-                anchor_start,
-                anchor_end,
-            )
-        )
-
-        raw_candidates.append({
-            "anchor_start": anchor_start,
-            "anchor_end": anchor_end,
-            "context_start": story_start,
-            "context_end": story_end,
-            "prefilter_marker": prefilter_marker,
-            "safe_start_boundaries": safe_starts,
-            "safe_end_boundaries": safe_ends,
-            "score": window_score,
-            "anchor_score": anchor_score,
-            "text": "\n".join(
-                s["raw"]
-                for s in segments
-                if s["end"] >= story_start
-                and s["start"] <= story_end
-            ),
-        })
-
-    raw_candidates.sort(
-        key=lambda item: (
-            item["score"],
-            item["anchor_score"],
-        ),
-        reverse=True,
-    )
-
-    selected = []
-
-    for candidate in raw_candidates:
-        duplicate = False
-
-        for existing in selected:
-            overlap_start = max(
-                candidate["context_start"],
-                existing["context_start"],
-            )
-            overlap_end = min(
-                candidate["context_end"],
-                existing["context_end"],
-            )
-
-            if overlap_end <= overlap_start:
+            if key in seen:
                 continue
 
-            overlap_duration = overlap_end - overlap_start
+            seen.add(key)
 
-            candidate_duration = (
-                candidate["context_end"]
-                - candidate["context_start"]
-            )
-            existing_duration = (
-                existing["context_end"]
-                - existing["context_start"]
+            candidates.append(
+                {
+                    "story_unit": unit_id,
+                    "story_unit_start": round(
+                        float(segments[unit_start]["start"]),
+                        3,
+                    ),
+                    "story_unit_end": round(
+                        float(segments[unit_end]["end"]),
+                        3,
+                    ),
+                    "candidate_start": candidate_start,
+                    "candidate_end": candidate_end,
+                    "candidate_duration": duration,
+                    "context_start": candidate_start,
+                    "context_end": candidate_end,
+                    "score": _structural_candidate_score(
+                        segments,
+                        candidate_start,
+                        candidate_end,
+                    ),
+                    "text": _candidate_text(
+                        segments,
+                        candidate_start,
+                        candidate_end,
+                    ),
+                    "prefilter_marker": {
+                        "start": candidate_start,
+                        "end": candidate_end,
+                        "duration": duration,
+                    },
+                }
             )
 
-            shorter_duration = min(
-                candidate_duration,
-                existing_duration,
+    candidates.sort(
+        key=lambda item: (
+            item["story_unit"],
+            item["candidate_start"],
+            -item["score"],
+        )
+    )
+
+    deduped = []
+
+    for candidate in candidates:
+        duplicate = False
+
+        for existing in deduped:
+            if candidate["story_unit"] != existing["story_unit"]:
+                continue
+
+            overlap_start = max(
+                candidate["candidate_start"],
+                existing["candidate_start"],
             )
 
-            if (
-                shorter_duration > 0
-                and overlap_duration / shorter_duration >= 0.60
-            ):
+            overlap_end = min(
+                candidate["candidate_end"],
+                existing["candidate_end"],
+            )
+
+            overlap = max(0.0, overlap_end - overlap_start)
+
+            shorter = min(
+                candidate["candidate_end"]
+                - candidate["candidate_start"],
+                existing["candidate_end"]
+                - existing["candidate_start"],
+            )
+
+            if shorter > 0 and overlap / shorter >= 0.60:
                 duplicate = True
                 break
 
-        if duplicate:
-            continue
+        if not duplicate:
+            deduped.append(candidate)
 
-        selected.append(candidate)
+    limit = (
+        max(20, int(duration_minutes * 1.5))
+        if duration_minutes
+        else 80
+    )
 
-        if len(selected) >= limit:
-            break
+    return deduped[:limit]
 
-    selected.sort(key=lambda item: item["anchor_start"])
-
-    for index, candidate in enumerate(selected, 1):
-        candidate["id"] = index
-
-    return selected
 
 def group_candidates(candidates):
-    """Group candidates into transitive overlapping context components."""
-    groups = []
+    """Group candidates by Story Unit, not transitive overlap."""
+    groups = {}
 
     for candidate in candidates:
-        overlapping = []
+        unit_id = candidate.get("story_unit", 0)
+        groups.setdefault(unit_id, []).append(candidate)
 
-        for index, group in enumerate(groups):
-            if any(
-                candidate["context_start"] < item["context_end"]
-                and candidate["context_end"] > item["context_start"]
-                for item in group
-            ):
-                overlapping.append(index)
+    ordered = []
 
-        if not overlapping:
-            groups.append([candidate])
-            continue
+    for unit_id, group in sorted(groups.items()):
+        group.sort(
+            key=lambda item: (
+                item["candidate_start"],
+                item["candidate_end"],
+            )
+        )
+        ordered.append(group)
 
-        merged = [candidate]
-
-        for index in reversed(overlapping):
-            merged.extend(groups.pop(index))
-
-        groups.append(merged)
-
-    # Urutkan kandidat dalam tiap group berdasarkan context_start
-    for group in groups:
-        group.sort(key=lambda item: item["context_start"])
-
-    # Urutkan groups berdasarkan context_start paling awal
-    groups.sort(key=lambda group: min(item["context_start"] for item in group))
-
-    return groups
+    return ordered
 
 
-def build_gemini_prompt(groups, source_url=""):
-    # Mendukung input baik berupa hasil group_candidates (list of groups)
-    # maupun flat list candidates jika dipanggil secara legacy
-    if groups and isinstance(groups, (list, tuple)):
-        first = groups[0]
-        if isinstance(first, dict):
-            groups = group_candidates(groups)
-    elif not groups:
-        groups = []
-
-    target_url = source_url.strip() if source_url else "<URL_YOUTUBE>"
-
-    # Pindahkan seluruh instruksi Gemini ke PALING ATAS prompt
+def build_gemini_prompt(video_url, groups):
+    """Build the M4 AI Validator prompt."""
     lines = [
-        "=== ATURAN EVALUASI & VALIDASI ===",
-        "1. Evaluasi SETIAP GROUP secara independen dan BERURUTAN mulai dari GROUP 1 sampai GROUP terakhir. Tidak boleh melewati group mana pun.",
-        "2. Sebelum membuat daftar clip final, Anda WAJIB menulis satu baris evaluasi untuk SETIAP GROUP dengan format persis:",
-        "   GROUP N: STRONG / WEAK / REJECT — alasan singkat",
-        "   Arti keputusan:",
-        "   - STRONG: Terdapat setidaknya satu kandidat yang berpotensi menjadi clip mandiri yang kuat.",
-        "   - WEAK: Ada materi tetapi tidak cukup kuat/mandiri untuk dijadikan clip.",
-        "   - REJECT: Tidak layak dijadikan clip.",
+        "Kamu adalah M4 — AI Validator untuk memilih momen video yang berpotensi menjadi klip pendek.",
         "",
-        "3. Setelah seluruh GROUP dievaluasi, susun 'DAFTAR CLIP TERPILIH' hanya dari kandidat yang benar-benar layak.",
-        "   Jangan memaksakan jumlah clip tertentu.",
-        "4. Jika tidak ada clip yang layak dari SEMUA GROUP:",
-        "   - Tulis tepat: TIDAK ADA KLIP LAYAK",
-        "   - JANGAN menghasilkan command yt-dlp apa pun.",
+        "ARSITEKTUR PIPELINE:",
+        "M2 menemukan Story Unit berdasarkan kesinambungan cerita.",
+        "M3 hanya melakukan structural gate dan menghasilkan kandidat aman.",
+        "M4 adalah satu-satunya tahap yang menilai potensi viral.",
         "",
-        "=== ATURAN PEMILIHAN CLIP ===",
-        "5. Untuk setiap clip terpilih, tentukan:",
-        "   - GROUP",
-        "   - CANDIDATE",
-        "   - START (format HH:MM:SS atau MM:SS)",
-        "   - END (format HH:MM:SS atau MM:SS)",
-        "   - DURASI",
-        "   - JUDUL/TOPIK",
-        "   - ALASAN",
-        "6. Gunakan URL YouTube sebagai sumber utama. Periksa langsung video pada sekitar timestamp kandidat untuk memahami ucapan, konteks, setup, reveal, result, dan payoff.",
-        "   Transcript TIDAK disertakan dalam prompt.",
-        "7. START dan END harus dipilih berdasarkan isi video yang benar-benar diperiksa:",
-        "   - Tidak memotong kalimat atau pemikiran pembicara.",
-        "   - Mencakup setup yang diperlukan dan mencakup explanation/reveal/result/payoff yang diperlukan.",
-        "8. Durasi clip valid berada pada rentang 25–70 detik. TIDAK ADA preferred duration.",
-        "9. Gunakan prinsip: 'STORY COMPLETENESS > DURATION TARGET'. Kelengkapan cerita selalu lebih penting daripada mengejar angka durasi.",
-        "   - Setup yang diperlukan harus tetap masuk.",
-        "   - Explanation/reveal/result/payoff harus tetap masuk.",
-        "   - Jangan memotong clip yang masih koheren hanya agar durasinya lebih pendek.",
-        "   - Jangan memperpanjang clip dengan materi yang tidak diperlukan hanya agar mendekati 70 detik.",
-        "10. Jangan memilih kandidat hanya karena ANCHOR-nya memiliki score PREFILTER tinggi. Periksa langsung isi video di sekitar timestamp kandidat.",
+        "ATURAN M3:",
+        "- Kandidat wajib 30–90 detik.",
+        "- 30–90 detik adalah GATE, bukan target durasi.",
+        "- Jangan memaksakan 45 detik.",
+        "- START tidak boleh memotong kalimat atau mid-thought.",
+        "- Hindari opening, basa-basi, dan filler jika tersedia batas aman yang lebih baik.",
+        "- END tidak boleh memotong kalimat.",
+        "- END harus mempertahankan payoff/reveal/result bila diperlukan.",
         "",
-        "=== ATURAN COMMAND YT-DLP ===",
-        "16. Jika ada satu atau lebih clip terpilih, Anda HARUS menghasilkan TEPAT SATU command shell yt-dlp untuk SEMUA clip tersebut.",
-        "    Satu response = satu command yt-dlp.",
-        "17. Gunakan SATU URL YouTube dan SATU invocation yt-dlp.",
-        "18. Untuk SETIAP clip terpilih, gunakan satu:",
-        '    --download-sections "*START-END"',
-        '    Contoh dua clip: --download-sections "*00:02:46-00:03:16" --download-sections "*00:07:44-00:08:14"',
-        "    Jangan membuat command yt-dlp terpisah untuk masing-masing clip.",
-        "19. Command WAJIB menggunakan format kompatibel ClipClip:",
-        '    -f "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]"',
-        '    JANGAN menggunakan "bv*+ba/b" atau "-f 134".',
-        "20. Command WAJIB menggunakan:",
-        "    --merge-output-format mp4",
-        "21. Output diarahkan ke:",
-        "    /storage/emulated/0/Movies/GenClip/",
-        "22. Kontrak Filename:",
-        '    - JANGAN mengandalkan "%(title)s" milik YouTube sebagai judul clip.',
-        '    - Judul clip yang dibuat Gemini harus menjadi bagian dari nama output.',
-        '    - Judul harus disanitasi: Karakter terlarang filesystem / \\ : * ? " < > | TIDAK BOLEH muncul; ganti dengan "_" dan rapikan spasi berlebih.',
-        '    - Gunakan pola nama file: JudulClip_START-END.mp4 dengan timestamp section dari yt-dlp agar setiap clip memiliki nama unik dan tidak saling menimpa:',
-        '      -o "/storage/emulated/0/Movies/GenClip/[JudulClipSanitasi]_%(section_start)s-%(section_end)s.%(ext)s"',
-        "23. Anda HANYA menghasilkan command, BUKAN menjalankannya. Jangan buat command untuk clip yang ditolak.",
+        "ATURAN M4:",
+        "- Evaluasi SETIAP kandidat.",
+        "- Jangan menggunakan label STRONG / WEAK / REJECT.",
+        "- Berikan VIRAL SCORE 0–100 untuk setiap kandidat.",
+        "- Story completeness lebih penting daripada durasi.",
+        "- Periksa hook pada 3 detik pertama.",
+        "- Periksa keamanan START.",
+        "- Periksa keamanan END.",
+        "- Nilai engagement dan potensi diskusi sehat.",
+        "- Nilai relatability.",
+        "- Nilai surprising/counterintuitive element.",
+        "- Nilai emotional/vulnerable element jika memang ada.",
+        "- Jangan mengarang isi video.",
         "",
-        "=== FORMAT RESPONSE GEMINI ===",
-        "Respons Anda HARUS mengikuti urutan berikut:",
+        "FORMAT EVALUASI:",
+        "GROUP N:",
+        "CANDIDATE M:",
+        "START: HH:MM:SS.xxx",
+        "END: HH:MM:SS.xxx",
+        "DURASI: xx.x detik",
+        "VIRAL SCORE: 0–100",
+        "HOOK ≤3 DETIK: ...",
+        "STORY COMPLETENESS: ...",
+        "START SAFETY: ...",
+        "END SAFETY: ...",
+        "ENGAGEMENT: ...",
+        "RELATABLE: ...",
+        "SURPRISING / COUNTERINTUITIVE: ...",
+        "EMOTIONAL / VULNERABLE: ...",
+        "ALASAN: ...",
+        "KUTIPAN AWAL: exact quote",
+        "KUTIPAN AKHIR: exact quote",
         "",
-        "EVALUASI GROUP",
-        "GROUP 1: STRONG / WEAK / REJECT — [alasan singkat]",
-        "GROUP 2: STRONG / WEAK / REJECT — [alasan singkat]",
-        "(tuliskan evaluasi satu baris untuk SETIAP GROUP secara berurutan)",
-        "",
-        "DAFTAR CLIP TERPILIH",
-        "(Jika tidak ada klip yang layak dari semua group, tulis TEPAT:)",
+        "Evaluasi SEMUA kandidat sebelum menentukan kandidat final.",
+        "Jangan memilih hanya karena durasinya mendekati angka tertentu.",
+        "Jika tidak ada kandidat yang memenuhi standar cerita dan kualitas, keluarkan tepat:",
         "TIDAK ADA KLIP LAYAK",
-        "(Jika ada klip layak, tulis untuk setiap clip terpilih:)",
-        "- GROUP: [nomor group]",
-        "- CANDIDATE: [id kandidat]",
-        "- START: [HH:MM:SS atau MM:SS]",
-        "- END: [HH:MM:SS atau MM:SS]",
-        "- DURASI: [durasi dalam detik]",
-        "- JUDUL/TOPIK: [judul singkat bersih dari karakter ilegal filesystem]",
-        "- ALASAN: [alasan singkat]",
-        "- KONTEKS: [ringkasan singkat isi yang diperiksa dari video]",
+        "dan jangan keluarkan command yt-dlp.",
         "",
-        "SATU COMMAND YT-DLP",
-        "(Hanya jika ada clip terpilih. JANGAN tampilkan bagian ini jika TIDAK ADA KLIP LAYAK)",
-        f'yt-dlp --download-sections "*START1-END1" --download-sections "*START2-END2" -f "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]" --merge-output-format mp4 -o "/storage/emulated/0/Movies/GenClip/[JudulClipSanitasi]_%(section_start)s-%(section_end)s.%(ext)s" "{target_url}"',
+        "Jika ada kandidat final, keluarkan SATU command yt-dlp.",
+        "Satu URL/invocation saja.",
+        'Gunakan -f "bv[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]"',
+        "--merge-output-format mp4",
+        "Output: /storage/emulated/0/Movies/GenClip/",
         "",
-        "=== DATA SUMBER ===",
-        "URL YouTube:",
-        target_url,
+        "VIDEO:",
+        video_url,
         "",
-        "=== KELOMPOK KANDIDAT PREFILTER (GROUPS) ===",
-        "Kandidat di bawah telah dikelompokkan berdasarkan tumpang tindih waktu/konteks (transitive overlap).",
-        "Kandidat dalam satu group harus dinilai bersamaan.",
-        "",
+        "KANDIDAT M3:",
     ]
 
-    if not groups:
-        lines.append("(Tidak ada kelompok kandidat ditemukan)")
-    else:
-        for g_idx, group in enumerate(groups, 1):
-            lines.append(
-                f"--- GROUP {g_idx} ({len(group)} kandidat) ---"
+    for group_number, group in enumerate(groups, start=1):
+        lines.append(f"GROUP {group_number}")
+
+        for candidate_number, candidate in enumerate(group, start=1):
+            lines.extend(
+                [
+                    f"CANDIDATE {candidate_number}",
+                    f"START: {candidate['candidate_start']:.3f}",
+                    f"END: {candidate['candidate_end']:.3f}",
+                    f"DURASI: {candidate['candidate_duration']:.1f}",
+                    f"STORY UNIT: {candidate['story_unit']}",
+                    f"STRUCTURAL SCORE: {candidate['score']:.3f}",
+                    f"TEXT: {candidate['text']}",
+                ]
             )
 
-            for c in group:
-                lines.append(
-                    f"CANDIDATE {c['id']}: START {c['anchor_start']:.3f} | END {c['anchor_end']:.3f}"
-                )
+    return "\n".join(lines)
 
-            lines.append("")
-
-    final_prompt = "\n".join(lines)
-
-    print(f"[DIAGNOSTIC] total prompt chars={len(final_prompt)}")
-
-    return final_prompt
