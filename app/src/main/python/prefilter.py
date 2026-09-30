@@ -203,12 +203,12 @@ def _lexical_overlap(left_text, right_text):
 
 def _safe_end_for_terminal(segments, index):
     """
-    Keep a terminal boundary, extending only through overlapping ASR cues
-    that are lexically duplicative. Stop when overlapping text introduces
-    new content.
+    Keep a terminal boundary, extending through an overlapping ASR chain
+    while each later cue remains lexically connected to the accumulated text.
+    Stop when overlapping text introduces unrelated content.
     """
     boundary = float(segments[index]["end"])
-    base_text = segments[index]["text"]
+    accumulated_text = segments[index]["text"]
 
     for later in segments[index + 1:]:
         later_start = float(later["start"])
@@ -218,10 +218,12 @@ def _safe_end_for_terminal(segments, index):
             break
 
         if later_end <= boundary + 1e-6:
+            accumulated_text = f"{accumulated_text} {later['text']}"
             continue
 
-        if _lexical_overlap(base_text, later["text"]) >= 0.45:
+        if _lexical_overlap(accumulated_text, later["text"]) >= 0.45:
             boundary = max(boundary, later_end)
+            accumulated_text = f"{accumulated_text} {later['text']}"
             continue
 
         break
