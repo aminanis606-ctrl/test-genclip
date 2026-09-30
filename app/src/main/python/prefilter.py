@@ -258,7 +258,7 @@ def _safe_start_boundaries(segments):
 
     for boundary in safe_ends:
         for segment in segments:
-            if float(segment["start"]) > boundary + 1e-6:
+            if float(segment["start"]) >= boundary - 1e-6:
                 safe_starts.append(round(float(segment["start"]), 3))
                 break
 
