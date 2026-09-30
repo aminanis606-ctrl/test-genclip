@@ -94,7 +94,7 @@ QUESTION_HOOK_RE = re.compile(
 )
 
 OPENING_RE = re.compile(
-    r"\b(sebelum video|video ini dimulai|selamat datang|welcome|qr code|subscribe|like|follow|website)\b",
+    r"^(?:sebelum video|video ini dimulai|selamat datang|welcome|halo|qr code|subscribe|like|follow|website)\b",
     re.I,
 )
 
@@ -309,10 +309,7 @@ def _safe_start_boundaries(segments):
                 previous_text = str(previous.get("text", "")).strip()
                 candidate_text = str(segment.get("text", "")).strip()
 
-                if (
-                    not is_terminal_boundary(previous_text)
-                    and CONTINUATION_START_RE.search(candidate_text)
-                ):
+                if not is_terminal_boundary(previous_text):
                     continue
 
             safe_starts.append(round(candidate_start, 3))
@@ -802,13 +799,7 @@ def find_candidates(transcript_text, duration_minutes=None):
                 candidate_end,
             )
 
-            if (
-                abs(
-                    candidate_start
-                    - float(segments[0]["start"])
-                ) < 0.001
-                and OPENING_RE.search(text[:500])
-            ):
+            if OPENING_RE.search(text[:500]):
                 continue
 
             seen.add(key)
