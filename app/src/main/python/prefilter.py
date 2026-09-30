@@ -662,11 +662,14 @@ def _candidate_text(segments, start, end):
         segment_start = float(segment["start"])
         segment_end = float(segment["end"])
 
-        if segment_end <= start:
+        if segment_start < start - 1e-6:
             continue
 
         if segment_start >= end:
             break
+
+        if segment_end <= start:
+            continue
 
         text = str(segment.get("text", "")).strip()
 
