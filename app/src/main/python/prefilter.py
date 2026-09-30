@@ -268,11 +268,21 @@ def _safe_end_boundaries(segments):
     return sorted(set(safe_ends))
 
 
+CONTINUATION_START_RE = re.compile(
+    r"^(?:"
+    r"apa|yang|buat|dari|ke|di|dengan|untuk|atau|dan|tapi|terus|"
+    r"karena|jadi|gitu|itu|ini|pribadi|ngedit|makan|beli|kayak|"
+    r"average|clipping|ee|emm"
+    r")\b",
+    re.I,
+)
+
+
 def _safe_start_boundaries(segments):
     """
-    For overlapping ASR subtitles, a safe START is the first cue beginning
-    at or after a verified terminal boundary. Do not require the new cue to
-    be outside the entire overlap chain.
+    For overlapping ASR subtitles, reject a START that falls inside a
+    non-terminal previous cue when the new cue continues its syntax.
+    Completed thoughts/questions remain valid handoff boundaries.
     """
     if not segments:
         return []
@@ -281,10 +291,32 @@ def _safe_start_boundaries(segments):
     safe_starts = [round(float(segments[0]["start"]), 3)]
 
     for boundary in safe_ends:
-        for segment in segments:
-            if float(segment["start"]) >= boundary - 1e-6:
-                safe_starts.append(round(float(segment["start"]), 3))
-                break
+        for index, segment in enumerate(segments):
+            candidate_start = float(segment["start"])
+
+            if candidate_start < boundary - 1e-6:
+                continue
+
+            previous = None
+            for earlier in segments[:index]:
+                if (
+                    float(earlier["start"]) < candidate_start - 1e-6
+                    and float(earlier["end"]) > candidate_start + 1e-6
+                ):
+                    previous = earlier
+
+            if previous is not None:
+                previous_text = str(previous.get("text", "")).strip()
+                candidate_text = str(segment.get("text", "")).strip()
+
+                if (
+                    not is_terminal_boundary(previous_text)
+                    and CONTINUATION_START_RE.search(candidate_text)
+                ):
+                    continue
+
+            safe_starts.append(round(candidate_start, 3))
+            break
 
     return sorted(set(safe_starts))
 
