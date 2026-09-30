@@ -12,7 +12,7 @@ SRT_TIME_RE = re.compile(
 )
 
 TERMINAL_BOUNDARY_RE = re.compile(
-    r"""[.!?](?:['")\]]*)$"""
+    r"""[.!](?:['")\]]*)$"""
 )
 
 SIGNALS = re.compile(
