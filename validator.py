@@ -55,7 +55,7 @@ For each selected candidate:
 - Include explanation, reveal, result, or payoff.
 - Never cut through a sentence or thought.
 - Do not add irrelevant material.
-- Final duration MUST be 25-70 seconds.
+- Final duration MUST be 30-90 seconds.
 - Prefer 30-60 seconds.
 - START and END MUST remain inside AVAILABLE_CONTEXT.
 - Do not invent timestamps.
@@ -185,7 +185,7 @@ CANDIDATES:
 
                 duration = end - start
 
-                if not 25 <= duration <= 70:
+                if not 30 <= duration <= 90:
                     continue
 
                 marker = c.get("prefilter_marker")
