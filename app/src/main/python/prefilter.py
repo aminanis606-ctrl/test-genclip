@@ -195,8 +195,8 @@ def _lexical_overlap(left_text, right_text):
     left = _token_set(left_text)
     right = _token_set(right_text)
 
-    if not left:
-        return 1.0
+    if not left or not right:
+        return 0.0
 
     return len(left & right) / len(left)
 
