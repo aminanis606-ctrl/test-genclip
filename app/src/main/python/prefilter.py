@@ -786,56 +786,28 @@ def find_candidates(transcript_text, duration_minutes=None):
 
     candidates.sort(
         key=lambda item: (
-            item["story_unit"],
             item["candidate_start"],
-            -item["score"],
+            item["candidate_end"],
         )
     )
 
-    deduped = []
+    non_overlapping = []
+    next_available_start = None
 
     for candidate in candidates:
-        duplicate = False
+        candidate_start = candidate["candidate_start"]
+        candidate_end = candidate["candidate_end"]
 
-        for existing in deduped:
-            if candidate["story_unit"] != existing["story_unit"]:
-                continue
+        if (
+            next_available_start is not None
+            and candidate_start <= next_available_start + 1e-6
+        ):
+            continue
 
-            overlap_start = max(
-                candidate["candidate_start"],
-                existing["candidate_start"],
-            )
-            overlap_end = min(
-                candidate["candidate_end"],
-                existing["candidate_end"],
-            )
-            overlap = max(
-                0.0,
-                overlap_end - overlap_start,
-            )
+        non_overlapping.append(candidate)
+        next_available_start = candidate_end
 
-            shorter = min(
-                candidate["candidate_duration"],
-                existing["candidate_duration"],
-            )
-
-            duration_delta = abs(
-                candidate["candidate_duration"]
-                - existing["candidate_duration"]
-            )
-
-            if (
-                shorter > 0
-                and overlap / shorter >= 0.85
-                and duration_delta <= 8.0
-            ):
-                duplicate = True
-                break
-
-        if not duplicate:
-            deduped.append(candidate)
-
-    return deduped
+    return non_overlapping
 
 
 def group_candidates(candidates):
