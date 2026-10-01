@@ -369,7 +369,7 @@ def build_prefilter_marker(segments, anchor_start, anchor_end):
     PREFILTER does not decide the final clip duration. It only exposes
     boundaries that are safe with respect to ASR overlap and terminal
     punctuation. Gemini remains responsible for story completeness and
-    the final 25-70 second selection.
+    the final 30-90 second selection.
     """
     safe_starts = _safe_start_boundaries(segments)
     safe_ends = []
@@ -527,7 +527,7 @@ def _topic_similarity(left_segments, right_segments):
 
 def _discover_story_units(segments, window_size=8):
     """
-    M2 Story Discovery.
+    Story Discovery.
 
     Detect local lexical-cohesion valleys, then snap each topic boundary
     forward to a safe transcript START. This discovers structural story
@@ -765,7 +765,7 @@ def _structural_candidate_score(segments, start, end):
 
 
 def find_candidates(transcript_text, duration_minutes=None):
-    """M2 Story Discovery -> M3 structural 30–90s candidate gate."""
+    """Story Discovery -> structural 30–90s candidate gate."""
     segments = parse(transcript_text)
 
     if not segments:
@@ -916,7 +916,7 @@ def build_gemini_prompt(video_url, groups):
         "VIDEO:",
         video_url,
         "",
-        "KANDIDAT M3:",
+        "KANDIDAT:",
     ]
 
     for group_number, group in enumerate(groups, start=1):
