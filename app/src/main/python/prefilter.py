@@ -500,189 +500,14 @@ def format_time(seconds):
 
 
 
-def _topic_similarity(left_segments, right_segments):
-    left_counts = {}
-    right_counts = {}
-
-    for segment in left_segments:
-        for token in _token_set(segment["text"]):
-            left_counts[token] = left_counts.get(token, 0) + 1
-
-    for segment in right_segments:
-        for token in _token_set(segment["text"]):
-            right_counts[token] = right_counts.get(token, 0) + 1
-
-    if not left_counts or not right_counts:
-        return 0.0
-
-    dot = sum(
-        left_counts[token] * right_counts.get(token, 0)
-        for token in left_counts
-    )
-
-    left_norm = sum(
-        value * value for value in left_counts.values()
-    ) ** 0.5
-
-    right_norm = sum(
-        value * value for value in right_counts.values()
-    ) ** 0.5
-
-    if left_norm == 0.0 or right_norm == 0.0:
-        return 0.0
-
-    return dot / (left_norm * right_norm)
-
-
-def _discover_story_units(segments, window_size=8):
-    """
-    Story Discovery.
-
-    Detect local lexical-cohesion valleys, then snap each topic boundary
-    forward to a safe transcript START. This discovers structural story
-    units; it does not score virality and does not impose a duration target.
-    """
-    if not segments:
-        return []
-
-    safe_starts = _safe_start_boundaries(segments)
-    safe_ends = _safe_end_boundaries(segments)
-
-    if not safe_starts or not safe_ends:
-        return [(0, len(segments) - 1)]
-
-    if len(segments) < (window_size * 2) + 1:
-        return [(0, len(segments) - 1)]
-
-    scores = []
-
-    for index in range(
-        window_size,
-        len(segments) - window_size,
-    ):
-        left = segments[index - window_size:index]
-        right = segments[index:index + window_size]
-
-        scores.append(
-            {
-                "index": index,
-                "similarity": _topic_similarity(left, right),
-            }
-        )
-
-    if len(scores) < 3:
-        return [(0, len(segments) - 1)]
-
-    mean = sum(
-        item["similarity"] for item in scores
-    ) / len(scores)
-
-    variance = sum(
-        (item["similarity"] - mean) ** 2
-        for item in scores
-    ) / len(scores)
-
-    threshold = mean - (1.5 * (variance ** 0.5))
-
-    boundary_starts = [safe_starts[0]]
-
-    for position in range(1, len(scores) - 1):
-        current = scores[position]
-        previous = scores[position - 1]
-        following = scores[position + 1]
-
-        if current["similarity"] > threshold:
-            continue
-
-        if current["similarity"] > previous["similarity"]:
-            continue
-
-        if current["similarity"] > following["similarity"]:
-            continue
-
-        raw_start = float(
-            segments[current["index"]]["start"]
-        )
-
-        snapped = next(
-            (
-                value
-                for value in safe_starts
-                if value >= raw_start - 1e-6
-            ),
-            safe_starts[-1],
-        )
-
-        if snapped <= boundary_starts[-1] + 1e-6:
-            continue
-
-        boundary_starts.append(snapped)
-
-    boundary_starts = sorted(set(boundary_starts))
-
-    if boundary_starts[-1] != safe_starts[-1]:
-        boundary_starts.append(safe_starts[-1])
-
-    units = []
-
-    for unit_number, start in enumerate(boundary_starts):
-        if unit_number + 1 < len(boundary_starts):
-            next_start = boundary_starts[unit_number + 1]
-
-            candidate_ends = [
-                value
-                for value in safe_ends
-                if value < next_start - 1e-6
-            ]
-
-            end_time = (
-                candidate_ends[-1]
-                if candidate_ends
-                else None
-            )
-        else:
-            end_time = safe_ends[-1]
-
-        if end_time is None or end_time <= start:
-            continue
-
-        unit_start = next(
-            (
-                index
-                for index, segment in enumerate(segments)
-                if abs(
-                    float(segment["start"]) - start
-                ) < 0.001
-            ),
-            None,
-        )
-
-        unit_end = None
-
-        for index, segment in enumerate(segments):
-            if float(segment["end"]) <= end_time + 1e-6:
-                unit_end = index
-
-        if (
-            unit_start is None
-            or unit_end is None
-            or unit_end < unit_start
-        ):
-            continue
-
-        units.append((unit_start, unit_end))
-
-    return units or [(0, len(segments) - 1)]
-
-
-def _candidate_windows_in_story_unit(
+def _candidate_windows(
     segments,
     unit_start,
     unit_end,
     min_seconds=30.0,
     max_seconds=90.0,
 ):
-    """Generate all structurally safe 30–90s windows in one Story Unit."""
+    """Generate all structurally safe 30–90s windows."""
     unit_segments = segments[unit_start : unit_end + 1]
 
     if not unit_segments:
@@ -774,7 +599,7 @@ def _structural_candidate_score(segments, start, end):
 
 
 def find_candidates(transcript_text, duration_minutes=None):
-    """Story Discovery -> structural 30–90s candidate gate."""
+    """Generate structurally safe 30–90s candidate windows."""
     segments = parse(transcript_text)
 
     if not segments:
@@ -783,14 +608,10 @@ def find_candidates(transcript_text, duration_minutes=None):
     candidates = []
     seen = set()
 
-    unit_id = 1
-    unit_start = 0
-    unit_end = len(segments) - 1
-
-    windows = _candidate_windows_in_story_unit(
+    windows = _candidate_windows(
         segments,
-        unit_start,
-        unit_end,
+        0,
+        len(segments) - 1,
         min_seconds=30.0,
         max_seconds=90.0,
     )
@@ -814,15 +635,6 @@ def find_candidates(transcript_text, duration_minutes=None):
 
             candidates.append(
                 {
-                    "story_unit": unit_id,
-                    "story_unit_start": round(
-                        float(segments[unit_start]["start"]),
-                        3,
-                    ),
-                    "story_unit_end": round(
-                        float(segments[unit_end]["end"]),
-                        3,
-                    ),
                     "candidate_start": candidate_start,
                     "candidate_end": candidate_end,
                     "candidate_duration": duration,
@@ -891,25 +703,15 @@ def find_candidates(transcript_text, duration_minutes=None):
 
 
 def group_candidates(candidates):
-    """Group candidates by Story Unit, not transitive overlap."""
-    groups = {}
-
-    for candidate in candidates:
-        unit_id = candidate.get("story_unit", 0)
-        groups.setdefault(unit_id, []).append(candidate)
-
-    ordered = []
-
-    for unit_id, group in sorted(groups.items()):
-        group.sort(
-            key=lambda item: (
-                item["candidate_start"],
-                item["candidate_end"],
-            )
-        )
-        ordered.append(group)
-
-    return ordered
+    """Keep candidates in one compatibility group."""
+    ordered = sorted(
+        candidates,
+        key=lambda item: (
+            item["candidate_start"],
+            item["candidate_end"],
+        ),
+    )
+    return [ordered] if ordered else []
 
 
 def build_gemini_prompt(video_url, groups):
