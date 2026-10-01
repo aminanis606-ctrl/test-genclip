@@ -780,23 +780,22 @@ def find_candidates(transcript_text, duration_minutes=None):
     if not segments:
         return []
 
-    story_units = _discover_story_units(segments)
     candidates = []
     seen = set()
 
-    for unit_id, (unit_start, unit_end) in enumerate(
-        story_units,
-        start=1,
-    ):
-        windows = _candidate_windows_in_story_unit(
-            segments,
-            unit_start,
-            unit_end,
-            min_seconds=30.0,
-            max_seconds=90.0,
-        )
+    unit_id = 1
+    unit_start = 0
+    unit_end = len(segments) - 1
 
-        for candidate_start, candidate_end, duration in windows:
+    windows = _candidate_windows_in_story_unit(
+        segments,
+        unit_start,
+        unit_end,
+        min_seconds=30.0,
+        max_seconds=90.0,
+    )
+
+    for candidate_start, candidate_end, duration in windows:
             key = (candidate_start, candidate_end)
 
             if key in seen:
@@ -954,7 +953,8 @@ def build_gemini_prompt(video_url, groups):
         for candidate_number, candidate in enumerate(group, start=1):
             lines.append(
                 f"G{group_number} C{candidate_number} | "
-                f"{candidate['candidate_start']:.3f}-{candidate['candidate_end']:.3f} | "
+                f"CLIP {candidate['candidate_start']:.3f}-{candidate['candidate_end']:.3f} | "
+                f"CONTEXT {candidate['context_start']:.3f}-{candidate['context_end']:.3f} | "
                 f"{candidate['candidate_duration']:.1f}s | "
                 f"SCORE {candidate['score']:.3f}"
             )
