@@ -268,14 +268,18 @@ def _safe_end_boundaries(segments):
     return sorted(set(safe_ends))
 
 
-CONTINUATION_START_RE = re.compile(
-    r"^(?:"
-    r"apa|yang|buat|dari|ke|di|dengan|untuk|atau|dan|tapi|terus|"
-    r"karena|jadi|gitu|itu|ini|pribadi|ngedit|makan|beli|kayak|"
-    r"average|clipping|ee|emm"
+HARD_CONTINUATION_RE = re.compile(
+    r"^\s*(?:"
+    r"karena|sehingga|maka|yang|dan|tetapi|tapi|atau|kalau|jika|bila|"
+    r"meskipun|walaupun|agar|supaya|hingga|sampai|sejak|selama|"
+    r"melainkan|padahal|kecuali"
     r")\b",
-    re.I,
+    re.IGNORECASE,
 )
+
+
+def _is_valid_start(text):
+    return not HARD_CONTINUATION_RE.match(str(text).strip())
 
 
 def _safe_start_boundaries(segments):
@@ -288,7 +292,10 @@ def _safe_start_boundaries(segments):
         return []
 
     safe_ends = _safe_end_boundaries(segments)
-    safe_starts = [round(float(segments[0]["start"]), 3)]
+    safe_starts = []
+
+    if _is_valid_start(segments[0].get("text", "")):
+        safe_starts.append(round(float(segments[0]["start"]), 3))
 
     for boundary in safe_ends:
         for index, segment in enumerate(segments):
@@ -307,10 +314,12 @@ def _safe_start_boundaries(segments):
 
             if previous is not None:
                 previous_text = str(previous.get("text", "")).strip()
-                candidate_text = str(segment.get("text", "")).strip()
 
                 if not is_terminal_boundary(previous_text):
                     continue
+
+            if not _is_valid_start(segment.get("text", "")):
+                continue
 
             safe_starts.append(round(candidate_start, 3))
             break
