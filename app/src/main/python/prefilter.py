@@ -827,8 +827,30 @@ def find_candidates(transcript_text, duration_minutes=None):
                     "candidate_start": candidate_start,
                     "candidate_end": candidate_end,
                     "candidate_duration": duration,
-                    "context_start": candidate_start,
-                    "context_end": candidate_end,
+                    "context_start": (
+                        _build_structural_context(
+                            segments,
+                            next(
+                                index
+                                for index, segment in enumerate(segments)
+                                if abs(
+                                    float(segment["start"]) - candidate_start
+                                ) < 0.001
+                            ),
+                        )[0]
+                    ),
+                    "context_end": (
+                        _build_structural_context(
+                            segments,
+                            next(
+                                index
+                                for index, segment in enumerate(segments)
+                                if abs(
+                                    float(segment["start"]) - candidate_start
+                                ) < 0.001
+                            ),
+                        )[1]
+                    ),
                     "score": _structural_candidate_score(
                         segments,
                         candidate_start,
