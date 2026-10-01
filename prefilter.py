@@ -365,7 +365,7 @@ def build_gemini_prompt(groups, source_url=""):
                 ])
 
     lines.extend([
-        "=== ATURAN M4 ===",
+        "=== ATURAN VALIDASI ===",
         "1. Tonton URL YouTube langsung dan evaluasi SEMUA CANDIDATE pada timestamp masing-masing.",
         "2. Beri VIRAL SCORE 0-100 untuk SETIAP CANDIDATE. Jangan gunakan STRONG/WEAK/REJECT.",
         "3. Nilai hook, story completeness, penyampaian, payoff, relatability, surprise, emosi, dan potensi diskusi.",
