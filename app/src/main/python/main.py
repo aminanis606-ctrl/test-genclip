@@ -201,6 +201,7 @@ def get_video_contract(url, cache_dir=None):
                 and cached_audio
                 and os.path.exists(cached_audio)
                 and os.path.getsize(cached_audio) > 0
+                and f"video_{vid}_audio" in os.path.basename(cached_audio)
             ):
                 return data
             else:
@@ -210,6 +211,9 @@ def get_video_contract(url, cache_dir=None):
 
     transcript, transcript_max_end = fetch_transcript_and_duration(vid)
     audio_path, media_duration = fetch_audio(vid, url, cache_dir)
+
+    if f"video_{vid}_audio" not in os.path.basename(audio_path):
+        raise ValueError(f"Audio identity mismatch: '{audio_path}' does not belong to video_id '{vid}'.")
 
     contract = {
         "video_id": vid,

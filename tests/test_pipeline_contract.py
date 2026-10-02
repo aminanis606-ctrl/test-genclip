@@ -65,6 +65,57 @@ def test_contract_media_duration_none_when_unavailable(tmp_path):
         assert contract["transcript_max_end"] == 15.0
 
 
+def test_source_identity_validation_and_isolation(tmp_path):
+    vid_a = "video_id_AA"
+    vid_b = "video_id_BB"
+    url_a = f"https://www.youtube.com/watch?v={vid_a}"
+    url_b = f"https://www.youtube.com/watch?v={vid_b}"
+
+    fake_fetched = [MagicMock(start=0.0, duration=5.0, text="Transcript for A")]
+    mock_api = MagicMock()
+    mock_api.list.return_value.find_transcript.return_value.fetch.return_value = fake_fetched
+
+    audio_a = tmp_path / f"video_{vid_a}_audio.m4a"
+    audio_a.write_bytes(b"audio A")
+
+    audio_b = tmp_path / f"video_{vid_b}_audio.m4a"
+    audio_b.write_bytes(b"audio B")
+
+    # 1. Verify fetch_audio receives the correct vid and url matching URL
+    fetch_audio_mock = MagicMock(return_value=(str(audio_a), 10.0))
+    with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
+         patch.object(main, "fetch_audio", fetch_audio_mock):
+
+        contract_a = main.get_video_contract(url_a, cache_dir=str(tmp_path))
+        fetch_audio_mock.assert_called_once_with(vid_a, url_a, str(tmp_path))
+
+        assert contract_a["video_id"] == vid_a
+        assert contract_a["audio_path"] == str(audio_a)
+
+    # Clear cached contract file to test fresh creation with mismatched audio identity
+    contract_a_file = tmp_path / f"video_{vid_a}_contract.json"
+    contract_a_file.unlink(missing_ok=True)
+
+    # 2. Verify that if fetch_audio returns an audio path belonging to a different video_id (mismatched identity), contract raises ValueError
+    fetch_mismatched = MagicMock(return_value=(str(audio_b), 10.0))
+    with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
+         patch.object(main, "fetch_audio", fetch_mismatched):
+
+        with pytest.raises(ValueError) as exc_info:
+            main.get_video_contract(url_a, cache_dir=str(tmp_path))
+        assert "Audio identity mismatch" in str(exc_info.value)
+
+    # 3. Prove Video A's cache cannot be served when requesting Video B
+    with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
+         patch.object(main, "fetch_audio", return_value=(str(audio_b), 10.0)):
+
+        contract_b = main.get_video_contract(url_b, cache_dir=str(tmp_path))
+        assert contract_b["video_id"] == vid_b
+        assert contract_b["audio_path"] == str(audio_b)
+        assert contract_b["video_id"] != contract_a["video_id"]
+        assert contract_b["audio_path"] != contract_a["audio_path"]
+
+
 def test_timeline_unshifted(tmp_path):
     video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     fake_vid = "dQw4w9WgXcQ"
