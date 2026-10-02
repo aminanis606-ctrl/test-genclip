@@ -24,6 +24,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install Python dependencies & run tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest youtube-transcript-api yt-dlp
+          pytest
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
