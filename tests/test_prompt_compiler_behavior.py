@@ -38,6 +38,9 @@ def test_prompt_compiler_separates_evidence_and_instructions():
     assert "35.000 - 70.000" in prompt
     assert "Akhirnya kami menemukan solusi yang berhasil." in prompt
     assert "30–90" in prompt
+    assert "MENDENGARKAN AUDIO video" in prompt
+    assert "menganalisis transkrip" in prompt
+    assert "JANGAN proses elemen visual (frame video)" in prompt
 
     command_lines = [
         line for line in prompt.splitlines()
