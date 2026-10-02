@@ -35,6 +35,15 @@ BAD = re.compile(
     re.I,
 )
 
+HARD_CONTINUATION_RE = re.compile(
+    r"^\s*(?:"
+    r"karena|sehingga|maka|yang|dan|tetapi|tapi|atau|kalau|jika|bila|"
+    r"meskipun|walaupun|agar|supaya|hingga|sampai|sejak|selama|"
+    r"melainkan|padahal|kecuali"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def parse_timestamp(value):
     hours, minutes, seconds, millis = map(int, value)
@@ -104,36 +113,170 @@ def is_terminal_boundary(text):
     return bool(TERMINAL_BOUNDARY_RE.search(normalized))
 
 
-def build_prefilter_marker(segments, anchor_start, anchor_end):
-    safe_starts = []
-    safe_ends = []
+def _token_set(text):
+    stopwords = {
+        "yang", "dan", "dari", "dengan", "untuk", "atau", "ini", "itu",
+        "jadi", "kan", "aku", "saya", "lu", "gua", "kita", "dia", "ada",
+        "apa", "nih", "ya", "lah", "kok", "tuh", "si", "ke", "di", "pada",
+        "nya", "gue", "bang", "oke", "the", "and", "for", "with", "that",
+        "this", "you", "are", "was", "but",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-z0-9áéíóúü]+", str(text).lower())
+        if len(token) > 2 and token not in stopwords
+    }
 
-    if segments:
-        safe_starts.append(round(segments[0]["start"], 3))
+
+def _lexical_overlap(left_text, right_text):
+    left = _token_set(left_text)
+    right = _token_set(right_text)
+
+    if not left or not right:
+        return 0.0
+
+    return len(left & right) / len(left)
+
+
+def _safe_end_for_terminal(segments, index):
+    terminal_start = float(segments[index]["start"])
+    boundary = float(segments[index]["end"])
+    accumulated_text = segments[index]["text"]
+
+    prior_overlap = [
+        segment
+        for segment in segments[:index]
+        if (
+            float(segment["start"]) < terminal_start - 1e-6
+            and float(segment["end"]) > terminal_start + 1e-6
+            and float(segment["end"]) > boundary + 1e-6
+        )
+    ]
+
+    if prior_overlap:
+        prior = max(
+            prior_overlap,
+            key=lambda segment: (
+                float(segment["start"]),
+                float(segment["end"]),
+            ),
+        )
+        boundary = float(prior["end"])
+
+    for later in segments[index + 1:]:
+        later_start = float(later["start"])
+        later_end = float(later["end"])
+
+        if later_start >= boundary - 1e-6:
+            break
+
+        if later_end <= boundary + 1e-6:
+            accumulated_text = f"{accumulated_text} {later['text']}"
+            continue
+
+        if _lexical_overlap(accumulated_text, later["text"]) >= 0.45:
+            boundary = max(boundary, later_end)
+            accumulated_text = f"{accumulated_text} {later['text']}"
+            continue
+
+        break
+
+    return round(boundary, 3)
+
+
+def _safe_end_boundaries(segments):
+    safe_ends = []
 
     for index, segment in enumerate(segments):
         if not is_terminal_boundary(segment["text"]):
             continue
 
-        terminal_end = round(segment["end"], 3)
+        boundary = _safe_end_for_terminal(segments, index)
+
+        if boundary > float(segment["start"]):
+            safe_ends.append(boundary)
+
+    return sorted(set(safe_ends))
+
+
+def _is_valid_start(text):
+    return not HARD_CONTINUATION_RE.match(str(text).strip())
+
+
+def _safe_start_boundaries(segments):
+    if not segments:
+        return []
+
+    safe_ends = _safe_end_boundaries(segments)
+    safe_starts = []
+
+    if _is_valid_start(segments[0].get("text", "")):
+        safe_starts.append(round(float(segments[0]["start"]), 3))
+
+    for boundary in safe_ends:
+        for index, segment in enumerate(segments):
+            candidate_start = float(segment["start"])
+
+            if candidate_start < boundary - 1e-6:
+                continue
+
+            previous = None
+            for earlier in segments[:index]:
+                if (
+                    float(earlier["start"]) < candidate_start - 1e-6
+                    and float(earlier["end"]) > candidate_start + 1e-6
+                ):
+                    previous = earlier
+
+            if previous is not None:
+                previous_text = str(previous.get("text", "")).strip()
+
+                if not is_terminal_boundary(previous_text):
+                    continue
+
+            if not _is_valid_start(segment.get("text", "")):
+                continue
+
+            safe_starts.append(round(candidate_start, 3))
+            break
+
+    return sorted(set(safe_starts))
+
+
+def _build_structural_context(segments, start_time, end_time, padding=30.0):
+    if not segments:
+        return 0.0, 0.0
+
+    min_time = float(segments[0]["start"])
+    max_time = float(segments[-1]["end"])
+
+    context_start = max(min_time, start_time - padding)
+    context_end = min(max_time, end_time + padding)
+
+    return round(context_start, 3), round(context_end, 3)
+
+
+def build_prefilter_marker(segments, anchor_start, anchor_end):
+    safe_starts = _safe_start_boundaries(segments)
+    safe_ends = []
+
+    for index, segment in enumerate(segments):
+        if not is_terminal_boundary(segment["text"]):
+            continue
+
+        terminal_end = _safe_end_for_terminal(segments, index)
+
+        next_index = index + 1
+        if next_index < len(segments):
+            next_start = float(segments[next_index]["start"])
+            raw_end = float(segment["end"])
+            gap = next_start - raw_end
+
+            if gap < 0.2 and next_start >= raw_end - 1e-6:
+                continue
+
         safe_ends.append(terminal_end)
 
-        # Transcript segments can overlap. The next segment by list index
-        # may start before the terminal sentence has actually ended, which
-        # would create a START boundary inside the same spoken thought.
-        next_start = next(
-            (
-                candidate["start"]
-                for candidate in segments[index + 1:]
-                if candidate["start"] >= segment["end"] - 1e-6
-            ),
-            None,
-        )
-
-        if next_start is not None:
-            safe_starts.append(round(next_start, 3))
-
-    safe_starts = sorted(set(safe_starts))
     safe_ends = sorted(set(safe_ends))
 
     start_options = [
@@ -152,43 +295,13 @@ def build_prefilter_marker(segments, anchor_start, anchor_end):
         return None, safe_starts, safe_ends
 
     marker_start = start_options[-1]
+    marker_end = end_options[0]
 
-    for marker_end in end_options:
-        duration = marker_end - marker_start
-
-        if duration < 25.0:
-            continue
-
-        if duration > 70.0:
-            break
-
-        return {
-            "start": marker_start,
-            "end": marker_end,
-            "duration": round(duration, 3),
-        }, safe_starts, safe_ends
-
-    return None, safe_starts, safe_ends
-
-
-def score(segment):
-    text = segment["text"]
-    words = len(text.split())
-    value = 0
-
-    if 8 <= words <= 60:
-        value += 2
-
-    if SIGNALS.search(text):
-        value += 4
-
-    if "?" in text:
-        value += 2
-
-    if BAD.search(text):
-        value -= 8
-
-    return value
+    return {
+        "start": marker_start,
+        "end": marker_end,
+        "duration": round(marker_end - marker_start, 3),
+    }, safe_starts, safe_ends
 
 
 def format_time(seconds):
@@ -200,94 +313,195 @@ def format_time(seconds):
     return f"{m:02d}:{s:02d}"
 
 
-def find_candidates(transcript, limit=None):
-    segments = parse(transcript)
+def _candidate_windows(
+    segments,
+    min_seconds=30.0,
+    max_seconds=90.0,
+):
+    if not segments:
+        return []
 
-    if limit is None:
-        duration_seconds = segments[-1]["end"] if segments else 0.0
-        duration_minutes = duration_seconds / 60.0
-        limit = max(20, int(duration_minutes * 1.5))
+    safe_starts = _safe_start_boundaries(segments)
+    safe_ends = _safe_end_boundaries(segments)
 
-    candidates = []
+    windows = []
 
-    for index, segment in enumerate(segments):
-        value = score(segment)
+    for candidate_start in safe_starts:
+        for candidate_end in safe_ends:
+            if candidate_end <= candidate_start:
+                continue
 
-        if value <= 0:
+            duration = candidate_end - candidate_start
+
+            if duration < min_seconds:
+                continue
+
+            if duration > max_seconds:
+                continue
+
+            windows.append(
+                (
+                    round(candidate_start, 3),
+                    round(candidate_end, 3),
+                    round(duration, 3),
+                )
+            )
+
+    return windows
+
+
+def _candidate_text(segments, start, end):
+    parts = []
+
+    for segment in segments:
+        segment_start = float(segment["start"])
+        segment_end = float(segment["end"])
+
+        if segment_start < start - 1e-6:
             continue
 
-        anchor_start = segment["start"]
-        anchor_end = segment["end"]
-        anchor_duration = anchor_end - anchor_start
+        if segment_start >= end:
+            break
 
-        context_budget = max(
-            0.0,
-            70.0 - anchor_duration
+        if segment_end <= start:
+            continue
+
+        text = str(segment.get("text", "")).strip()
+
+        if text:
+            parts.append(text)
+
+    return " ".join(parts)
+
+
+def _structural_candidate_score(segments, start, end):
+    duration = end - start
+    text = _candidate_text(segments, start, end)
+
+    score_val = 0.0
+
+    if 30.0 <= duration <= 90.0:
+        score_val += 2.0
+
+    if is_terminal_boundary(text):
+        score_val += 1.0
+
+    if SIGNALS.search(text):
+        score_val += 2.0
+
+    if BAD.search(text):
+        score_val -= 5.0
+
+    return round(score_val, 3)
+
+
+def find_candidates(transcript_text, limit=None):
+    """
+    Search across entire transcript for non-overlapping candidate story moments (30-90s).
+    Keyword/signals are indicators, not strict prerequisites.
+    No limit / candidate-count cap applied.
+    """
+    segments = parse(transcript_text)
+
+    if not segments:
+        return []
+
+    windows = _candidate_windows(
+        segments,
+        min_seconds=30.0,
+        max_seconds=90.0,
+    )
+
+    candidates = []
+    seen = set()
+
+    for candidate_start, candidate_end, duration in windows:
+        key = (candidate_start, candidate_end)
+
+        if key in seen:
+            continue
+
+        text = _candidate_text(
+            segments,
+            candidate_start,
+            candidate_end,
         )
-        before = context_budget / 2.0
-        after = context_budget - before
 
-        start = max(0.0, anchor_start - before)
-        end = anchor_end + after
+        if BAD.search(text[:200]):
+            continue
 
-        prefilter_marker, safe_starts, safe_ends = (
-            build_prefilter_marker(
-                segments,
-                anchor_start,
-                anchor_end,
-            )
+        seen.add(key)
+
+        score_val = _structural_candidate_score(
+            segments,
+            candidate_start,
+            candidate_end,
         )
 
-        if prefilter_marker:
-            start = min(
-                start,
-                prefilter_marker["start"]
-            )
-            end = max(
-                end,
-                prefilter_marker["end"]
-            )
+        context_start, context_end = _build_structural_context(
+            segments,
+            candidate_start,
+            candidate_end,
+            padding=30.0,
+        )
 
-        context = [
-            s for s in segments
-            if s["end"] >= start and s["start"] <= end
-        ]
+        safe_starts = _safe_start_boundaries(
+            [s for s in segments if s["end"] >= context_start and s["start"] <= context_end]
+        )
+        safe_ends = _safe_end_boundaries(
+            [s for s in segments if s["end"] >= context_start and s["start"] <= context_end]
+        )
 
-        candidates.append({
-            "anchor_start": anchor_start,
-            "anchor_end": anchor_end,
-            "context_start": start,
-            "context_end": end,
-            "prefilter_marker": prefilter_marker,
-            "safe_start_boundaries": safe_starts,
-            "safe_end_boundaries": safe_ends,
-            "score": value,
-            "text": "\n".join(
-                s["raw"] for s in context
-            ),
-        })
+        candidates.append(
+            {
+                "anchor_start": candidate_start,
+                "anchor_end": candidate_end,
+                "context_start": context_start,
+                "context_end": context_end,
+                "candidate_start": candidate_start,
+                "candidate_end": candidate_end,
+                "candidate_duration": duration,
+                "prefilter_marker": {
+                    "start": candidate_start,
+                    "end": candidate_end,
+                    "duration": duration,
+                },
+                "safe_start_boundaries": safe_starts,
+                "safe_end_boundaries": safe_ends,
+                "score": score_val,
+                "text": text,
+            }
+        )
 
+    # Sort by candidate_start chronologically
     candidates.sort(
-        key=lambda item: item["score"],
-        reverse=True
+        key=lambda item: (
+            item["candidate_start"],
+            item["candidate_end"],
+        )
     )
 
-    # Ambil top kandidat hingga limit=20 tanpa membuang karena overlap
-    selected = candidates[:limit]
+    # Filter out overlapping candidates, prioritizing earlier and higher scoring ones
+    non_overlapping = []
+    next_available_start = 0.0
 
-    # Urutkan secara kronologis
-    selected.sort(
-        key=lambda item: item["anchor_start"]
-    )
+    for candidate in candidates:
+        if candidate["candidate_start"] >= next_available_start - 1e-6:
+            non_overlapping.append(candidate)
+            next_available_start = candidate["candidate_end"]
 
-    for index, candidate in enumerate(selected, 1):
+    # Assign Sequential Candidate IDs
+    for index, candidate in enumerate(non_overlapping, start=1):
         candidate["id"] = index
 
-    return selected
+    return non_overlapping
 
 
 def group_candidates(candidates):
     """Group candidates into transitive overlapping context components."""
+    if not candidates:
+        return []
+
     groups = []
 
     for candidate in candidates:
@@ -312,19 +526,22 @@ def group_candidates(candidates):
 
         groups.append(merged)
 
-    # Urutkan kandidat dalam tiap group berdasarkan context_start
     for group in groups:
         group.sort(key=lambda item: item["context_start"])
 
-    # Urutkan groups berdasarkan context_start paling awal
     groups.sort(key=lambda group: min(item["context_start"] for item in group))
 
     return groups
 
 
-def build_gemini_prompt(groups, source_url=""):
-    # Mendukung input baik berupa hasil group_candidates (list of groups)
-    # maupun flat list candidates jika dipanggil secara legacy
+def build_gemini_prompt(source_url, groups):
+    """
+    Build prompt for AI validation.
+    Accepts (source_url, groups) or (groups, source_url) for compatibility.
+    """
+    if isinstance(source_url, (list, tuple)):
+        source_url, groups = groups if isinstance(groups, str) else "", source_url
+
     if groups and isinstance(groups, (list, tuple)):
         first = groups[0]
         if isinstance(first, dict):
@@ -332,7 +549,7 @@ def build_gemini_prompt(groups, source_url=""):
     elif not groups:
         groups = []
 
-    target_url = source_url.strip() if source_url else "<URL_YOUTUBE>"
+    target_url = str(source_url).strip() if source_url else "<URL_YOUTUBE>"
 
     lines = [
         "URL YouTube:",
@@ -354,61 +571,50 @@ def build_gemini_prompt(groups, source_url=""):
                 f"--- GROUP {g_idx} ({len(group)} kandidat, Rentang Konteks: {format_time(g_start)} - {format_time(g_end)} / {g_start:.1f}s - {g_end:.1f}s) ---"
             )
             for c in group:
+                cand_id = c.get("id", 1)
                 lines.extend([
-                    f"CANDIDATE {c['id']}",
+                    f"CANDIDATE {cand_id}",
                     f"ANCHOR: {c['anchor_start']:.3f} - {c['anchor_end']:.3f} ({format_time(c['anchor_start'])} - {format_time(c['anchor_end'])})",
                     f"AVAILABLE_CONTEXT: {c['context_start']:.3f} - {c['context_end']:.3f} ({format_time(c['context_start'])} - {format_time(c['context_end'])})",
-                    f"PREFILTER_FINAL_MARKER: {c['prefilter_marker'] if c['prefilter_marker'] else 'NONE'}",
-                    f"SAFE_START_BOUNDARIES: {c['safe_start_boundaries']}",
-                    f"SAFE_END_BOUNDARIES: {c['safe_end_boundaries']}",
+                    f"PREFILTER_FINAL_MARKER: {c.get('prefilter_marker', 'NONE')}",
+                    f"SAFE_START_BOUNDARIES: {c.get('safe_start_boundaries', [])}",
+                    f"SAFE_END_BOUNDARIES: {c.get('safe_end_boundaries', [])}",
+                    f"TEXT: {c.get('text', '')}",
                     "",
                 ])
 
     lines.extend([
-        "=== ATURAN M4 ===",
-        "1. Tonton URL YouTube langsung dan evaluasi SEMUA CANDIDATE pada timestamp masing-masing.",
-        "2. Beri VIRAL SCORE 0-100 untuk SETIAP CANDIDATE. Jangan gunakan STRONG/WEAK/REJECT.",
-        "3. Nilai hook, story completeness, penyampaian, payoff, relatability, surprise, emosi, dan potensi diskusi.",
-        "4. Durasi final valid 30-90 detik. STORY COMPLETENESS > DURATION.",
-        "5. START dan END harus membentuk satu pemikiran utuh. Tanda ? bukan otomatis END; lanjutkan jika pertanyaan masih membutuhkan jawaban.",
-        "6. START dan END wajib berada dalam AVAILABLE_CONTEXT kandidat terkait; jangan keluar dari rentang tersebut.",
-        "7. Jangan memilih hanya karena PREFILTER tertinggi. Evaluasi semua kandidat berdasarkan video aktual.",
-        "8. Kutipan awal dan akhir harus exact dari ucapan video.",
-        "9. Setelah SEMUA kandidat dinilai, pilih kandidat final yang benar-benar layak.",
-        "10. Jika tidak ada kandidat layak: TIDAK ADA KLIP LAYAK.",
+        "=== ATURAN VALIDASI AI ===",
+        "1. Tonton dan dengarkan video YouTube langsung atau baca transkrip untuk mengevaluasi SEMUA kandidat.",
+        "2. Beri VIRAL SCORE 0–100 untuk SETIAP CANDIDATE berdasarkan kriteria berikut:",
+        "   - Hook awal (≤3 detik pertama harus menarik perhatian).",
+        "   - Story completeness (kelengkapan cerita/pemikiran utuh, tidak menggantung).",
+        "   - Start/end safety (START tidak memotong kalimat/pikiran/ASR overlap; END menjaga payoff).",
+        "   - Engagement & Relatability.",
+        "   - Surprising/Counterintuitive atau Emotional/Vulnerable.",
+        "3. Durasi final WAJIB 30–90 detik. Catatan: 30–90 detik adalah HARD GATE, BUKAN target durasi.",
+        "4. START dan END wajib berada di dalam AVAILABLE_CONTEXT kandidat terkait.",
+        "5. Bebas dari intro, basa-basi, sponsor, CTA (like/subscribe), dan salam pembuka.",
+        "6. Sertakan exact quote: KUTIPAN AWAL dan KUTIPAN AKHIR yang persis ada pada video/transcript.",
+        "7. Jika TIDAK ADA kandidat yang benar-benar layak, outputkan: TIDAK ADA KLIP LAYAK.",
         "",
         "=== ATURAN COMMAND YT-DLP ===",
-        "11. Jika ada satu atau lebih clip terpilih, Anda HARUS menghasilkan TEPAT SATU command shell yt-dlp untuk SEMUA clip tersebut.",
-        "    Satu response = satu command yt-dlp.",
-        "12. Gunakan SATU URL YouTube dan SATU invocation yt-dlp.",
-        "13. Untuk SETIAP clip terpilih, gunakan satu:",
-        '    --download-sections "*START-END"',
-        '    Contoh dua clip: --download-sections "*00:02:46-00:03:16" --download-sections "*00:07:44-00:08:14"',
-        "    Jangan membuat command yt-dlp terpisah untuk masing-masing clip.",
-        "14. Command WAJIB menggunakan format kompatibel ClipClip:",
-        '    -f "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]"',
-        '    JANGAN menggunakan "bv*+ba/b" atau "-f 134".',
-        "15. Command WAJIB menggunakan:",
-        "    --merge-output-format mp4",
-        "16. Output diarahkan ke:",
-        "    /storage/emulated/0/Movies/GenClip/",
-        "17. Kontrak Filename:",
-        '    - JANGAN mengandalkan "%(title)s" milik YouTube sebagai judul clip.',
-        '    - Judul clip yang dibuat Gemini harus menjadi bagian dari nama output.',
-        '    - Judul harus disanitasi: Karakter terlarang filesystem / \\ : * ? " < > | TIDAK BOLEH muncul; ganti dengan "_" dan rapikan spasi berlebih.',
-        '    - Gunakan pola nama file: JudulClip_START-END.mp4 dengan timestamp section dari yt-dlp agar setiap clip memiliki nama unik dan tidak saling menimpa:',
-        '      -o "/storage/emulated/0/Movies/GenClip/[JudulClipSanitasi]_%(section_start)s-%(section_end)s.%(ext)s"',
-        "18. Anda HANYA menghasilkan command, BUKAN menjalankannya. Jangan buat command untuk clip yang ditolak.",
+        "8. Jika ada satu atau lebih clip terpilih, Anda HARUS menghasilkan TEPAT SATU command shell yt-dlp untuk SEMUA clip tersebut.",
+        "9. Gunakan SATU URL YouTube dan SATU invocation yt-dlp dengan multiple --download-sections.",
+        "10. Command WAJIB menggunakan format kompatibel ClipClip:",
+        '    -f "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]" --merge-output-format mp4',
+        "11. Output diarahkan ke: /storage/emulated/0/Movies/GenClip/[JudulClipSanitasi]_%(section_start)s-%(section_end)s.%(ext)s",
+        "12. HANYA hasilkan command, JANGAN jalankan command.",
         "",
         "=== FORMAT RESPONSE GEMINI ===",
         "Respons Anda HARUS mengikuti urutan berikut:",
         "",
         "EVALUASI CANDIDATE",
-        "CANDIDATE N: VIRAL SCORE 0-100 — [alasan singkat]",
+        "CANDIDATE N: VIRAL SCORE 0-100 — [alasan evaluasi]",
         "(tuliskan evaluasi satu baris untuk SETIAP CANDIDATE)",
         "",
         "DAFTAR CLIP TERPILIH",
-        "(Jika tidak ada klip yang layak dari semua group, tulis TEPAT:)",
+        "(Jika tidak ada klip yang layak, tulis TEPAT:)",
         "TIDAK ADA KLIP LAYAK",
         "(Jika ada klip layak, tulis untuk setiap clip terpilih:)",
         "- GROUP: [nomor group]",
