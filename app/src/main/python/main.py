@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import subprocess
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -136,10 +135,11 @@ def fetch_audio(vid, url, cache_dir):
     audio_file = cache_path / f"video_{vid}_audio.m4a"
 
     if audio_file.exists() and audio_file.stat().st_size > 0:
-        return str(audio_file)
+        return str(audio_file), None
 
     download_success = False
     error_msg = ""
+    media_duration = None
 
     try:
         import yt_dlp
@@ -148,9 +148,15 @@ def fetch_audio(vid, url, cache_dir):
             'outtmpl': str(cache_path / f"video_{vid}_audio.%(ext)s"),
             'quiet': True,
             'no_warnings': True,
+            'nocheckcertificate': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url if url else f"https://www.youtube.com/watch?v={vid}"])
+            target_url = url if url else f"https://www.youtube.com/watch?v={vid}"
+            info_dict = ydl.extract_info(target_url, download=True)
+            if info_dict:
+                raw_duration = info_dict.get('duration')
+                if raw_duration is not None:
+                    media_duration = float(raw_duration)
 
         for ext in ["m4a", "webm", "opus", "mp3", "aac"]:
             candidate = cache_path / f"video_{vid}_audio.{ext}"
@@ -162,34 +168,10 @@ def fetch_audio(vid, url, cache_dir):
     except Exception as e:
         error_msg = str(e)
 
-    if not download_success:
-        try:
-            cmd = [
-                "yt-dlp",
-                "-f", "bestaudio/best",
-                "-o", str(cache_path / f"video_{vid}_audio.%(ext)s"),
-                url if url else f"https://www.youtube.com/watch?v={vid}"
-            ]
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if res.returncode == 0:
-                for ext in ["m4a", "webm", "opus", "mp3", "aac"]:
-                    candidate = cache_path / f"video_{vid}_audio.{ext}"
-                    if candidate.exists() and candidate.stat().st_size > 0:
-                        if candidate != audio_file:
-                            candidate.rename(audio_file)
-                        download_success = True
-                        break
-            else:
-                if res.stderr:
-                    error_msg = res.stderr.strip()
-        except Exception as e:
-            if not error_msg:
-                error_msg = str(e)
-
     if not download_success or not audio_file.exists() or audio_file.stat().st_size == 0:
         raise RuntimeError(f"Gagal mengunduh/mengambil audio untuk video ID '{vid}': {error_msg or 'Audio tidak tersedia'}")
 
-    return str(audio_file)
+    return str(audio_file), media_duration
 
 
 def get_video_contract(url, cache_dir=None):
@@ -226,14 +208,17 @@ def get_video_contract(url, cache_dir=None):
         except Exception:
             contract_file.unlink(missing_ok=True)
 
-    transcript, duration = fetch_transcript_and_duration(vid)
-    audio_path = fetch_audio(vid, url, cache_dir)
+    transcript, transcript_max_end = fetch_transcript_and_duration(vid)
+    audio_path, media_duration = fetch_audio(vid, url, cache_dir)
+
+    final_duration = media_duration if media_duration is not None else transcript_max_end
 
     contract = {
         "video_id": vid,
         "transcript": transcript,
         "audio_path": audio_path,
-        "duration": duration,
+        "duration": final_duration,
+        "transcript_max_end": transcript_max_end,
     }
 
     try:

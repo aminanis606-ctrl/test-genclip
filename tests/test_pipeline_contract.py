@@ -27,7 +27,7 @@ def test_contract_structure(tmp_path):
     fake_audio.write_bytes(b"dummy audio content")
 
     with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
-         patch.object(main, "fetch_audio", return_value=str(fake_audio)):
+         patch.object(main, "fetch_audio", return_value=(str(fake_audio), 15.0)):
 
         contract = main.get_video_contract(video_url, cache_dir=str(tmp_path))
 
@@ -35,6 +35,7 @@ def test_contract_structure(tmp_path):
         assert "Hello world" in contract["transcript"]
         assert contract["audio_path"] == str(fake_audio)
         assert contract["duration"] == 15.0
+        assert contract["transcript_max_end"] == 15.0
         assert Path(contract["audio_path"]).exists()
 
 
@@ -55,7 +56,7 @@ def test_timeline_unshifted(tmp_path):
     fake_audio.write_bytes(b"audio")
 
     with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
-         patch.object(main, "fetch_audio", return_value=str(fake_audio)):
+         patch.object(main, "fetch_audio", return_value=(str(fake_audio), 40.0)):
 
         contract = main.get_video_contract(video_url, cache_dir=str(tmp_path))
         transcript_str = contract["transcript"]
@@ -89,7 +90,7 @@ def test_cache_does_not_mix_videos_and_rejects_incomplete_cache(tmp_path):
     ]
 
     with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
-         patch.object(main, "fetch_audio", side_effect=lambda v, u, c: str(tmp_path / f"video_{v}_audio.m4a")):
+         patch.object(main, "fetch_audio", side_effect=lambda v, u, c: (str(tmp_path / f"video_{v}_audio.m4a"), 5.0)):
 
         c1 = main.get_video_contract(url1, cache_dir=str(tmp_path))
         c2 = main.get_video_contract(url2, cache_dir=str(tmp_path))
@@ -107,7 +108,7 @@ def test_cache_does_not_mix_videos_and_rejects_incomplete_cache(tmp_path):
         def recreate_audio(v, u, c):
             p = tmp_path / f"video_{v}_audio.m4a"
             p.write_bytes(b"recreated audio")
-            return str(p)
+            return str(p), 5.0
 
         fetch_audio_mock = MagicMock(side_effect=recreate_audio)
         with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
