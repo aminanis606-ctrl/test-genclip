@@ -544,11 +544,15 @@ def build_gemini_prompt(source_url, groups):
     target_url = str(source_url).strip() if source_url else "<URL_YOUTUBE>"
 
     lines = [
+        "=== GENCLIP PROMPT COMPILER ===",
+        "Tujuan: Menyiapkan fakta, evidence transkrip, kandidat timestamp, dan instruksi evaluasi untuk LLM eksternal.",
+        "",
         "URL YouTube:",
         target_url,
         "",
-        "=== KELOMPOK KANDIDAT PREFILTER (GROUPS) ===",
+        "=== FAKTA DAN KONTEKS/EVIDENCE PREFILTER (GROUPS) ===",
         "Kandidat di bawah telah dikelompokkan berdasarkan tumpang tindih waktu/konteks (transitive overlap).",
+        "Semua timestamp, batas aman, dan transkrip di bawah adalah fakta/evidence aktual.",
         "Kandidat dalam satu group harus dinilai bersamaan.",
         "",
     ]
@@ -576,7 +580,7 @@ def build_gemini_prompt(source_url, groups):
                 ])
 
     lines.extend([
-        "=== ATURAN VALIDASI AI ===",
+        "=== INSTRUKSI EVALUASI / HIPOTESIS UNTUK LLM EKSTERNAL ===",
         "1. Tonton dan dengarkan video YouTube langsung atau baca transkrip untuk mengevaluasi SEMUA kandidat.",
         "2. Beri VIRAL SCORE 0–100 untuk SETIAP CANDIDATE berdasarkan kriteria berikut:",
         "   - Hook awal (≤3 detik pertama harus menarik perhatian).",
