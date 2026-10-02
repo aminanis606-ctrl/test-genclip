@@ -481,20 +481,12 @@ def find_candidates(transcript_text, limit=None):
         )
     )
 
-    # Filter out overlapping candidates, prioritizing earlier and higher scoring ones
-    non_overlapping = []
-    next_available_start = 0.0
-
-    for candidate in candidates:
-        if candidate["candidate_start"] >= next_available_start - 1e-6:
-            non_overlapping.append(candidate)
-            next_available_start = candidate["candidate_end"]
-
-    # Assign Sequential Candidate IDs
-    for index, candidate in enumerate(non_overlapping, start=1):
+    # Preserve all valid candidates.
+    # Overlap is handled later by grouping; it must not cause recall loss here.
+    for index, candidate in enumerate(candidates, start=1):
         candidate["id"] = index
 
-    return non_overlapping
+    return candidates
 
 
 def group_candidates(candidates):
