@@ -32,7 +32,8 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
+
+import org.json.JSONObject;
 
 import com.chaquo.python.PyObject;
 import com.chaquo.python.Python;
@@ -55,55 +56,6 @@ public class MainActivity extends Activity {
 
     private String selectedSrtContent = null;
     private String selectedFileName = null;
-
-    private String transcriptCacheKey(String sourceUrl) throws Exception {
-        byte[] digest = MessageDigest.getInstance("SHA-256")
-                .digest(sourceUrl.trim().getBytes(StandardCharsets.UTF_8));
-
-        StringBuilder hex = new StringBuilder();
-        for (byte value : digest) {
-            hex.append(String.format("%02x", value));
-        }
-
-        return "transcript-" + hex + ".srt";
-    }
-
-    private File transcriptCacheFile(String sourceUrl) throws Exception {
-        return new File(getCacheDir(), transcriptCacheKey(sourceUrl));
-    }
-
-    private String readTranscriptCache(String sourceUrl) throws Exception {
-        File cacheFile = transcriptCacheFile(sourceUrl);
-
-        if (!cacheFile.isFile()) {
-            return null;
-        }
-
-        try (FileInputStream in = new FileInputStream(cacheFile);
-             java.io.ByteArrayOutputStream buffer =
-                     new java.io.ByteArrayOutputStream()) {
-
-            byte[] data = new byte[8192];
-            int count;
-
-            while ((count = in.read(data)) != -1) {
-                buffer.write(data, 0, count);
-            }
-
-            return buffer.toString("UTF-8");
-        }
-    }
-
-    private void writeTranscriptCache(
-            String sourceUrl,
-            String transcript
-    ) throws Exception {
-        File cacheFile = transcriptCacheFile(sourceUrl);
-
-        try (FileOutputStream out = new FileOutputStream(cacheFile)) {
-            out.write(transcript.getBytes(StandardCharsets.UTF_8));
-        }
-    }
 
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -559,42 +511,50 @@ public class MainActivity extends Activity {
             pbLoading.setVisibility(View.VISIBLE);
             btnAnalyze.setEnabled(false);
             btnAnalyze.setText("Memproses...");
-            sendNotification("Clipper Core", "Mengunduh transcript video YouTube...", true);
+            sendNotification("Clipper Core", "Mengunduh transcript dan audio video YouTube...", true);
 
             new Thread(() -> {
                 try {
-                    String cached = readTranscriptCache(value);
-
-                    if (cached != null && !cached.trim().isEmpty()) {
-                        runOnUiThread(() ->
-                                runPrefilter(cached, value)
-                        );
-                        return;
-                    }
-
                     Python python = Python.getInstance();
                     PyObject module = python.getModule("main");
 
-                    String result =
-                            module.callAttr("transcript_srt", value)
-                                    .toJava(String.class);
+                    String cacheDirStr = getCacheDir().getAbsolutePath();
 
-                    writeTranscriptCache(value, result);
+                    PyObject contractJsonObj = module.callAttr(
+                            "get_video_contract_json",
+                            value,
+                            cacheDirStr
+                    );
+
+                    String jsonStr = contractJsonObj.toJava(String.class);
+                    JSONObject contractJson = new JSONObject(jsonStr);
+
+                    String vid = contractJson.optString("video_id", null);
+                    String transcript = contractJson.optString("transcript", null);
+                    String audioPath = contractJson.optString("audio_path", null);
+
+                    if (vid == null || vid.isEmpty() || transcript == null || transcript.isEmpty()) {
+                        throw new RuntimeException("Data contract tidak lengkap: transcript kosong.");
+                    }
+
+                    if (audioPath == null || audioPath.isEmpty() || !new File(audioPath).exists() || new File(audioPath).length() == 0) {
+                        throw new RuntimeException("Gagal memproses pipeline: Audio video tidak ditemukan atau gagal diunduh.");
+                    }
 
                     runOnUiThread(() ->
-                            runPrefilter(result, value)
+                            runPrefilter(transcript, value)
                     );
                 } catch (Exception e) {
                     runOnUiThread(() -> {
                         pbLoading.setVisibility(View.GONE);
                         btnAnalyze.setEnabled(true);
                         btnAnalyze.setText("Analisis Transcript");
-                        Toast.makeText(MainActivity.this, "Gagal mengunduh transcript. Cek notifikasi.", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(MainActivity.this, "Gagal memproses pipeline (transcript+audio). Cek notifikasi.", Toast.LENGTH_SHORT).show();
                     });
 
                     sendNotification(
-                            "Gagal Mengambil Transcript",
-                            e.getMessage() != null ? e.getMessage() : "Tidak dapat mengambil transcript dari URL yang diberikan.",
+                            "Gagal Memproses Pipeline Video",
+                            e.getMessage() != null ? e.getMessage() : "Terjadi kesalahan saat mengambil transcript/audio.",
                             false
                     );
                 }
