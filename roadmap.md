@@ -6,19 +6,21 @@ REPO: test-genclip
 ## PIPELINE
 URL VIDEO
 → transcript + timestamp
-→ prefilter
-→ prompt AI validation/selection + yt-dlp download
+→ prefilter (recall-first discovery kandidat cerita 30–90s)
+→ prompt compiler (fakta, evidence, timestamp, & instruksi evaluasi untuk LLM eksternal)
 
-## ATURAN PREFILTER
+## ATURAN PREFILTER & PROMPT COMPILER
 - Prefilter membaca transcript dan timestamp secara langsung.
-- Mencari momen cerita secara kronologis.
+- Mencari momen cerita secara kronologis lintas transkrip.
+- Overlap kandidat dipertahankan pada tahap discovery (recall-first); pengelompokan (grouping) menangani transitive overlap.
 - START harus natural dan tidak memotong kalimat atau pikiran.
 - END harus berhenti pada akhir pemikiran.
 - Tanda `?` bukan otomatis END.
-- Kandidat tidak boleh overlap.
 - 30–90 detik adalah hard gate, bukan target durasi.
 - Kelengkapan cerita lebih penting daripada durasi.
-- Tidak ada batas jumlah kandidat.
+- Tidak ada arbitrary candidate-count cap.
+- Prompt Compiler menyajikan fakta/evidence transkrip & timestamp terpisah dari instruksi evaluasi LLM.
+- HANYA menghasilkan template command yt-dlp untuk LLM; tidak menjalankan yt-dlp lokal di pipeline GenClip.
 
 ## STATUS
-Aktif — penyederhanaan dan penyempurnaan prefilter.
+Aktif — konsolidasi prefilter dan prompt compiler GenClip.
