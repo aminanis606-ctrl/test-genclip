@@ -581,7 +581,7 @@ def build_gemini_prompt(source_url, groups):
 
     lines.extend([
         "=== INSTRUKSI EVALUASI / HIPOTESIS UNTUK LLM EKSTERNAL ===",
-        "1. Tonton dan dengarkan video YouTube langsung atau baca transkrip untuk mengevaluasi SEMUA kandidat.",
+        "1. Gunakan HANYA AUDIO, TRANSKRIP, dan TIMESTAMP yang DISEDIAKAN DI PROMPT sebagai dasar evaluasi. DILARANG membuka atau menonton video YouTube, mengambil data tambahan dari YouTube, memproses frame, atau menggunakan elemen visual.",
         "2. Beri VIRAL SCORE 0–100 untuk SETIAP CANDIDATE berdasarkan kriteria berikut:",
         "   - Hook awal (≤3 detik pertama harus menarik perhatian).",
         "   - Story completeness (kelengkapan cerita/pemikiran utuh, tidak menggantung).",
