@@ -211,13 +211,11 @@ def get_video_contract(url, cache_dir=None):
     transcript, transcript_max_end = fetch_transcript_and_duration(vid)
     audio_path, media_duration = fetch_audio(vid, url, cache_dir)
 
-    final_duration = media_duration if media_duration is not None else transcript_max_end
-
     contract = {
         "video_id": vid,
         "transcript": transcript,
         "audio_path": audio_path,
-        "duration": final_duration,
+        "duration": media_duration,
         "transcript_max_end": transcript_max_end,
     }
 

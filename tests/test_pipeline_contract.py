@@ -27,16 +27,42 @@ def test_contract_structure(tmp_path):
     fake_audio.write_bytes(b"dummy audio content")
 
     with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
-         patch.object(main, "fetch_audio", return_value=(str(fake_audio), 15.0)):
+         patch.object(main, "fetch_audio", return_value=(str(fake_audio), 18.5)):
 
         contract = main.get_video_contract(video_url, cache_dir=str(tmp_path))
 
         assert contract["video_id"] == fake_vid
         assert "Hello world" in contract["transcript"]
         assert contract["audio_path"] == str(fake_audio)
-        assert contract["duration"] == 15.0
+        assert contract["duration"] == 18.5
         assert contract["transcript_max_end"] == 15.0
         assert Path(contract["audio_path"]).exists()
+
+
+def test_contract_media_duration_none_when_unavailable(tmp_path):
+    video_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    fake_vid = "dQw4w9WgXcQ"
+
+    fake_fetched = [
+        MagicMock(start=0.0, duration=5.0, text="Hello world"),
+        MagicMock(start=5.0, duration=10.0, text="This is a test video transcript"),
+    ]
+
+    mock_api = MagicMock()
+    mock_api.list.return_value.find_transcript.return_value.fetch.return_value = fake_fetched
+
+    fake_audio = tmp_path / f"video_{fake_vid}_audio.m4a"
+    fake_audio.write_bytes(b"dummy audio content")
+
+    # When media duration is unavailable (None), duration must remain None and not fallback to transcript_max_end
+    with patch.object(main, "YouTubeTranscriptApi", return_value=mock_api), \
+         patch.object(main, "fetch_audio", return_value=(str(fake_audio), None)):
+
+        contract = main.get_video_contract(video_url, cache_dir=str(tmp_path))
+
+        assert contract["video_id"] == fake_vid
+        assert contract["duration"] is None
+        assert contract["transcript_max_end"] == 15.0
 
 
 def test_timeline_unshifted(tmp_path):
