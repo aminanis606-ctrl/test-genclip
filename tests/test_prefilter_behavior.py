@@ -9,13 +9,45 @@ sys.path.insert(
 import prefilter
 
 
-def test_overlapping_candidates_are_preserved():
+def test_prefilter_contract_uses_timestamps_and_preserves_recall_boundaries():
     transcript = "\n".join([
-        "[0-35] Pertama kita mengalami masalah besar dalam bisnis.",
-        "[35-70] Kemudian akhirnya kami menemukan solusi yang berhasil.",
-        "[70-105] Setelah itu keputusan tersebut mengubah semuanya.",
-        "[105-140] Dari pengalaman itu saya belajar banyak hal.",
+        "00:00:00,000 --> 00:00:35,000",
+        "Pertama kita mengalami masalah besar dalam bisnis.",
+        "",
+        "00:00:35,000 --> 00:01:10,000",
+        "Kemudian akhirnya kami menemukan solusi yang berhasil.",
+        "",
+        "00:01:10,000 --> 00:01:45,000",
+        "Setelah itu keputusan tersebut mengubah semuanya.",
+        "",
+        "00:01:45,000 --> 00:02:20,000",
+        "yang kemudian menjadi pelajaran penting bagi kami.",
+        "",
+        "00:02:20,000 --> 00:02:55,000",
+        "Namun bagian ini berakhir sebagai pertanyaan?",
     ])
+
+    segments = prefilter.parse(transcript)
+
+    assert len(segments) == 5
+    assert segments[0]["start"] == 0.0
+    assert segments[1]["start"] == 35.0
+    assert segments[2]["start"] == 70.0
+    assert segments[3]["start"] == 105.0
+    assert segments[4]["start"] == 140.0
+
+    safe_starts = prefilter._safe_start_boundaries(segments)
+    safe_ends = prefilter._safe_end_boundaries(segments)
+
+    assert 0.0 in safe_starts
+    assert 35.0 in safe_starts
+    assert 70.0 in safe_starts
+    assert 105.0 not in safe_starts
+
+    assert 35.0 in safe_ends
+    assert 70.0 in safe_ends
+    assert 105.0 in safe_ends
+    assert 175.0 not in safe_ends
 
     candidates = prefilter.find_candidates(transcript)
 
@@ -26,4 +58,22 @@ def test_overlapping_candidates_are_preserved():
 
     assert (0.0, 70.0) in windows
     assert (35.0, 105.0) in windows
-    assert (70.0, 140.0) in windows
+
+    assert any(
+        candidate["candidate_start"] == 0.0
+        and candidate["candidate_end"] == 70.0
+        and candidate["candidate_end"] - candidate["candidate_start"] == 70.0
+        for candidate in candidates
+    )
+
+    assert any(
+        candidate["candidate_start"] == 35.0
+        and candidate["candidate_end"] == 105.0
+        and candidate["candidate_end"] - candidate["candidate_start"] == 70.0
+        for candidate in candidates
+    )
+
+    assert all(
+        30.0 <= candidate["candidate_duration"] <= 90.0
+        for candidate in candidates
+    )
