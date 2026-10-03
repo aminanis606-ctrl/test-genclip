@@ -3,6 +3,7 @@ import struct
 import sys
 import wave
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 # Ensure app/src/main/python is in sys.path
 sys.path.insert(
@@ -11,6 +12,7 @@ sys.path.insert(
 )
 
 import audio_analysis
+import main
 import prefilter
 
 
@@ -90,6 +92,33 @@ def test_missing_audio_file_returns_missing_status(tmp_path):
     assert evidence["audio_present"] is False
     assert evidence["status"] == "missing_file"
     assert "file not found" in evidence["summary"]
+
+
+def test_fetch_audio_selects_lowest_bitrate_audio_only_format(tmp_path):
+    vid = "test_vid_123"
+    url = f"https://www.youtube.com/watch?v={vid}"
+
+    fake_m4a = tmp_path / f"video_{vid}_audio.m4a"
+
+    def mock_extract(target_url, download=True):
+        create_sample_wav(fake_m4a, duration_sec=10.0)
+        return {"duration": 10.0}
+
+    mock_ydl = MagicMock()
+    mock_ydl.extract_info.side_effect = mock_extract
+
+    with patch("yt_dlp.YoutubeDL") as mock_ydl_cls:
+        mock_ydl_cls.return_value.__enter__.return_value = mock_ydl
+
+        audio_path, duration = main.fetch_audio(vid, url, str(tmp_path))
+
+        assert mock_ydl_cls.called
+        opts = mock_ydl_cls.call_args[0][0]
+        # Verify format selector enforces audio-only lowest bitrate
+        assert "worstaudio" in opts["format"]
+        assert "worst" in opts["format"]
+        assert audio_path == str(fake_m4a)
+        assert duration == 10.0
 
 
 def test_find_candidates_integrates_audio_evidence(tmp_path):
