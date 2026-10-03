@@ -249,7 +249,8 @@ public class MainActivity extends Activity {
 
     private void runPrefilter(
             String transcript,
-            String sourceUrl
+            String sourceUrl,
+            String audioPath
     ) {
         runOnUiThread(() -> {
             pbLoading.setVisibility(View.VISIBLE);
@@ -257,15 +258,19 @@ public class MainActivity extends Activity {
             btnAnalyze.setText("Memproses...");
         });
 
-        sendNotification("Clipper Core", "Menganalisis transcript dan menyusun prompt...", true);
+        sendNotification("Clipper Core", "Menganalisis transcript dan audio...", true);
 
         new Thread(() -> {
             try {
                 Python python = Python.getInstance();
                 PyObject module = python.getModule("prefilter");
 
-                PyObject candidates =
-                        module.callAttr("find_candidates", transcript);
+                PyObject candidates;
+                if (audioPath != null && !audioPath.isEmpty()) {
+                    candidates = module.callAttr("find_candidates", transcript, audioPath);
+                } else {
+                    candidates = module.callAttr("find_candidates", transcript);
+                }
 
                 PyObject groups =
                         module.callAttr("group_candidates", candidates);
@@ -499,7 +504,7 @@ public class MainActivity extends Activity {
             String value = etUrl.getText().toString().replaceAll("\\s+", "");
 
             if (selectedSrtContent != null && !selectedSrtContent.trim().isEmpty()) {
-                runPrefilter(selectedSrtContent, value);
+                runPrefilter(selectedSrtContent, value, null);
                 return;
             }
 
@@ -542,7 +547,7 @@ public class MainActivity extends Activity {
                     }
 
                     runOnUiThread(() ->
-                            runPrefilter(transcript, value)
+                            runPrefilter(transcript, value, audioPath)
                     );
                 } catch (Exception e) {
                     runOnUiThread(() -> {

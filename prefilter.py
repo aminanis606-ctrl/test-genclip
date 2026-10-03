@@ -395,7 +395,7 @@ def _structural_candidate_score(segments, start, end):
     return round(score_val, 3)
 
 
-def find_candidates(transcript_text, limit=None):
+def find_candidates(transcript_text, audio_path=None, limit=None):
     """
     Search across entire transcript for non-overlapping candidate story moments (30-90s).
     Keyword/signals are indicators, not strict prerequisites.
@@ -452,6 +452,18 @@ def find_candidates(transcript_text, limit=None):
             [s for s in segments if s["end"] >= context_start and s["start"] <= context_end]
         )
 
+        audio_ev = None
+        if audio_path:
+            try:
+                from audio_analysis import analyze_audio_segment
+                audio_ev = analyze_audio_segment(
+                    audio_path,
+                    candidate_start,
+                    candidate_end,
+                )
+            except Exception:
+                audio_ev = None
+
         candidates.append(
             {
                 "anchor_start": candidate_start,
@@ -470,6 +482,7 @@ def find_candidates(transcript_text, limit=None):
                 "safe_end_boundaries": safe_ends,
                 "score": score_val,
                 "text": text,
+                "audio_evidence": audio_ev,
             }
         )
 
@@ -568,16 +581,27 @@ def build_gemini_prompt(source_url, groups):
             )
             for c in group:
                 cand_id = c.get("id", 1)
-                lines.extend([
+                audio_ev = c.get("audio_evidence")
+                audio_summary = (
+                    audio_ev.get("summary")
+                    if isinstance(audio_ev, dict) and audio_ev.get("summary")
+                    else "N/A"
+                )
+                cand_lines = [
                     f"CANDIDATE {cand_id}",
                     f"ANCHOR: {c['anchor_start']:.3f} - {c['anchor_end']:.3f} ({format_time(c['anchor_start'])} - {format_time(c['anchor_end'])})",
                     f"AVAILABLE_CONTEXT: {c['context_start']:.3f} - {c['context_end']:.3f} ({format_time(c['context_start'])} - {format_time(c['context_end'])})",
                     f"PREFILTER_FINAL_MARKER: {c.get('prefilter_marker', 'NONE')}",
                     f"SAFE_START_BOUNDARIES: {c.get('safe_start_boundaries', [])}",
                     f"SAFE_END_BOUNDARIES: {c.get('safe_end_boundaries', [])}",
+                ]
+                if audio_summary != "N/A":
+                    cand_lines.append(f"AUDIO_EVIDENCE: {audio_summary}")
+                cand_lines.extend([
                     f"TEXT: {c.get('text', '')}",
                     "",
                 ])
+                lines.extend(cand_lines)
 
     lines.extend([
         "=== INSTRUKSI EVALUASI / HIPOTESIS UNTUK LLM EKSTERNAL ===",

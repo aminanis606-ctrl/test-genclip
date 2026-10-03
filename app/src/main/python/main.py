@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from audio_analysis import analyze_audio_segment
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
     VideoUnavailable,
