@@ -27,20 +27,7 @@ def main():
 
     print("[2] PREFILTER")
 
-    from config import TEMP
-    from whisper import video_id
-    vid = video_id(url)
-    audio_path = None
-    if vid:
-        for ext in ["m4a", "opus", "mp3", "webm"]:
-            cand = TEMP / f"{vid}_whisper.{ext}"
-            if not cand.exists():
-                cand = TEMP / f"{vid}.{ext}"
-            if cand.exists() and cand.stat().st_size > 0:
-                audio_path = str(cand)
-                break
-
-    candidates = find_candidates(text, audio_path=audio_path)
+    candidates = find_candidates(text)
 
     print(f"[PREFILTER] {len(candidates)} kandidat ditemukan")
 
