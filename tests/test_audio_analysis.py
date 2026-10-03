@@ -5,7 +5,10 @@ import wave
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import av
+try:
+    import av
+except ImportError:
+    av = None
 
 # Ensure app/src/main/python is in sys.path
 sys.path.insert(
