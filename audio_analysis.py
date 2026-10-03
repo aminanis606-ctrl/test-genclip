@@ -16,7 +16,7 @@ except ImportError:
 
 def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
     """
-    Decode compressed (M4A, MP3, WebM, Opus, FLAC, Vorbis) or uncompressed (WAV) audio file
+    Decode compressed (M4A, AAC, MP3, WebM, Opus, FLAC, Vorbis) or uncompressed (WAV) audio file
     into raw 16-bit mono PCM sample bytes and sample rate using av / miniaudio / wave decoders.
     Returns (pcm_bytes, sample_rate).
     """
@@ -69,7 +69,8 @@ def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
                             continue
                         if start_sec is not None and (rf_t + rf_dur) < start_sec:
                             continue
-                        pcm_chunks.append(rf.planes[0].to_bytes())
+                        pcm_chunks.append(bytes(rf.planes[0]))
+                container.close()
                 if pcm_chunks:
                     return b"".join(pcm_chunks), 16000
         except Exception:
