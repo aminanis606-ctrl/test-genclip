@@ -77,3 +77,22 @@ def test_prefilter_contract_uses_timestamps_and_preserves_recall_boundaries():
         30.0 <= candidate["candidate_duration"] <= 90.0
         for candidate in candidates
     )
+
+def test_real_sample_finds_mother_umrah_story_candidate():
+    transcript_path = (
+        Path(__file__).resolve().parent.parent
+        / "samples"
+        / "youtube"
+        / "I2F9dZoLHUg"
+        / "transcript.id-orig.srt"
+    )
+    transcript = transcript_path.read_text(encoding="utf-8")
+
+    candidates = prefilter.find_candidates(transcript)
+
+    assert any(
+        candidate["candidate_start"] == 523.479
+        and candidate["candidate_end"] == 604.04
+        and candidate["candidate_duration"] == 80.561
+        for candidate in candidates
+    )
