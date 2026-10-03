@@ -1,13 +1,20 @@
 # roadmap.md
-ROADMAP_VERSION: 1.3
-ROADMAP_UPDATED: 2026-09-29
+ROADMAP_VERSION: 1.4
+ROADMAP_UPDATED: 2026-10-02
 REPO: test-genclip
 
 ## PIPELINE
 URL VIDEO
-→ transcript + timestamp
+→ transcript + timestamp + audio (analisis internal GenClip)
 → prefilter (recall-first discovery kandidat cerita 30–90s)
 → prompt compiler (fakta, evidence, timestamp, & instruksi evaluasi untuk LLM eksternal)
+→ LLM eksternal memakai URL dan tool/kemampuannya sendiri untuk mendengarkan audio
+
+## BATAS AUDIO
+- Audio GenClip digunakan untuk analisis internal, bukan dikirim ke LLM eksternal.
+- Jangan menganggap `audio_path` harus masuk ke prompt compiler.
+- Audit harus memastikan audio benar-benar digunakan internal, bukan sekadar diunduh/divalidasi.
+
 
 ## ATURAN PREFILTER & PROMPT COMPILER
 - Prefilter membaca transcript dan timestamp secara langsung.
