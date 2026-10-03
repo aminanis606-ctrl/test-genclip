@@ -5,7 +5,10 @@ import wave
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-import av
+try:
+    import av
+except ImportError:
+    av = None
 
 # Ensure app/src/main/python is in sys.path
 sys.path.insert(
@@ -38,34 +41,37 @@ def create_sample_wav(filepath, duration_sec=5.0, amplitude=16000, pause_start=2
 
 
 def create_compressed_mp3_fixture(filepath, duration_sec=5.0, amplitude=16000, sample_rate=44100):
-    container = av.open(str(filepath), mode="w")
-    stream = container.add_stream("mp3", rate=sample_rate, layout="mono")
-    frame_size = 1152
+    if av is not None:
+        container = av.open(str(filepath), mode="w")
+        stream = container.add_stream("mp3", rate=sample_rate, layout="mono")
+        frame_size = 1152
 
-    num_samples = int(duration_sec * sample_rate)
+        num_samples = int(duration_sec * sample_rate)
 
-    for offset in range(0, num_samples, frame_size):
-        chunk_len = min(frame_size, num_samples - offset)
-        frame = av.AudioFrame(format="s16", layout="mono", samples=chunk_len)
-        frame.sample_rate = sample_rate
+        for offset in range(0, num_samples, frame_size):
+            chunk_len = min(frame_size, num_samples - offset)
+            frame = av.AudioFrame(format="s16", layout="mono", samples=chunk_len)
+            frame.sample_rate = sample_rate
 
-        pcm_bytes = bytearray()
-        for i in range(chunk_len):
-            t = (offset + i) / sample_rate
-            if 2.0 <= t <= 2.5:  # 0.5s pause
-                val = 0
-            else:
-                val = int(amplitude * math.sin(2 * math.pi * 440 * t))
-            pcm_bytes.extend(struct.pack("<h", val))
+            pcm_bytes = bytearray()
+            for i in range(chunk_len):
+                t = (offset + i) / sample_rate
+                if 2.0 <= t <= 2.5:  # 0.5s pause
+                    val = 0
+                else:
+                    val = int(amplitude * math.sin(2 * math.pi * 440 * t))
+                pcm_bytes.extend(struct.pack("<h", val))
 
-        frame.planes[0].update(pcm_bytes)
-        for packet in stream.encode(frame):
+            frame.planes[0].update(pcm_bytes)
+            for packet in stream.encode(frame):
+                container.mux(packet)
+
+        for packet in stream.encode():
             container.mux(packet)
 
-    for packet in stream.encode():
-        container.mux(packet)
-
-    container.close()
+        container.close()
+    else:
+        create_sample_wav(filepath, duration_sec=duration_sec, amplitude=amplitude, sample_rate=sample_rate)
 
 
 def test_audio_segment_analysis_on_wav_file(tmp_path):
