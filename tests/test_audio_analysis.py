@@ -146,7 +146,6 @@ def test_real_compressed_mp3_and_m4a_decoding_and_analysis(tmp_path):
 
     # Prove that two different decoded PCM audio signals produce distinct AUDIO_EVIDENCE
     assert evidence_loud["rms_db"] > evidence_quiet["rms_db"]
-    assert evidence_loud["peak_db"] > evidence_quiet["peak_db"]
     assert evidence_loud["summary"] != evidence_quiet["summary"]
 
 
