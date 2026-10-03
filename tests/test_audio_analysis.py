@@ -5,6 +5,8 @@ import wave
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import av
+
 # Ensure app/src/main/python is in sys.path
 sys.path.insert(
     0,
@@ -35,6 +37,37 @@ def create_sample_wav(filepath, duration_sec=5.0, amplitude=16000, pause_start=2
         wf.writeframes(b"".join(frames))
 
 
+def create_compressed_mp3_fixture(filepath, duration_sec=5.0, amplitude=16000, sample_rate=44100):
+    container = av.open(str(filepath), mode="w")
+    stream = container.add_stream("mp3", rate=sample_rate, layout="mono")
+    frame_size = 1152
+
+    num_samples = int(duration_sec * sample_rate)
+
+    for offset in range(0, num_samples, frame_size):
+        chunk_len = min(frame_size, num_samples - offset)
+        frame = av.AudioFrame(format="s16", layout="mono", samples=chunk_len)
+        frame.sample_rate = sample_rate
+
+        pcm_bytes = bytearray()
+        for i in range(chunk_len):
+            t = (offset + i) / sample_rate
+            if 2.0 <= t <= 2.5:  # 0.5s pause
+                val = 0
+            else:
+                val = int(amplitude * math.sin(2 * math.pi * 440 * t))
+            pcm_bytes.extend(struct.pack("<h", val))
+
+        frame.planes[0].update(pcm_bytes)
+        for packet in stream.encode(frame):
+            container.mux(packet)
+
+    for packet in stream.encode():
+        container.mux(packet)
+
+    container.close()
+
+
 def test_audio_segment_analysis_on_wav_file(tmp_path):
     wav_path = tmp_path / "test_audio.wav"
     create_sample_wav(wav_path, duration_sec=5.0)
@@ -56,28 +89,37 @@ def test_audio_segment_analysis_on_wav_file(tmp_path):
     assert "Audio [0.0s - 5.0s]:" in evidence["summary"]
 
 
-def test_different_audio_signals_produce_different_audio_evidence(tmp_path):
-    high_energy_path = tmp_path / "loud.wav"
-    low_energy_path = tmp_path / "quiet.wav"
+def test_real_compressed_mp3_audio_decoding_and_analysis(tmp_path):
+    mp3_loud = tmp_path / "loud.mp3"
+    mp3_quiet = tmp_path / "quiet.mp3"
 
-    # Signal A: Loud audio (amplitude 28000)
-    create_sample_wav(high_energy_path, duration_sec=5.0, amplitude=28000, pause_start=2.0, pause_end=2.2)
+    create_compressed_mp3_fixture(mp3_loud, duration_sec=5.0, amplitude=28000)
+    create_compressed_mp3_fixture(mp3_quiet, duration_sec=5.0, amplitude=1000)
 
-    # Signal B: Very quiet audio (amplitude 1200) with long pause
-    create_sample_wav(low_energy_path, duration_sec=5.0, amplitude=1200, pause_start=1.0, pause_end=4.0)
+    evidence_loud = audio_analysis.analyze_audio_segment(str(mp3_loud), start_sec=0.0, end_sec=5.0)
+    evidence_quiet = audio_analysis.analyze_audio_segment(str(mp3_quiet), start_sec=0.0, end_sec=5.0)
 
-    evidence_high = audio_analysis.analyze_audio_segment(str(high_energy_path), start_sec=0.0, end_sec=5.0)
-    evidence_low = audio_analysis.analyze_audio_segment(str(low_energy_path), start_sec=0.0, end_sec=5.0)
+    assert evidence_loud["audio_present"] is True
+    assert evidence_quiet["audio_present"] is True
 
-    assert evidence_high["status"] == "analyzed"
-    assert evidence_low["status"] == "analyzed"
+    assert evidence_loud["status"] == "analyzed"
+    assert evidence_quiet["status"] == "analyzed"
 
-    # Loud audio must have higher RMS dB than quiet audio
-    assert evidence_high["rms_db"] > evidence_low["rms_db"]
-    # Peak dB of loud audio must be higher
-    assert evidence_high["peak_db"] > evidence_low["peak_db"]
-    # Summaries must be completely different
-    assert evidence_high["summary"] != evidence_low["summary"]
+    # Prove that the two different decoded PCM audio signals produce distinct AUDIO_EVIDENCE
+    assert evidence_loud["rms_db"] > evidence_quiet["rms_db"]
+    assert evidence_loud["peak_db"] > evidence_quiet["peak_db"]
+    assert evidence_loud["summary"] != evidence_quiet["summary"]
+
+
+def test_decode_failed_for_corrupted_audio_file(tmp_path):
+    corrupt_file = tmp_path / "corrupt.mp3"
+    corrupt_file.write_bytes(b"INVALID_HEADER_GARBAGE_BYTES")
+
+    evidence = audio_analysis.analyze_audio_segment(str(corrupt_file), start_sec=0.0, end_sec=5.0)
+
+    assert evidence["audio_present"] is True
+    assert evidence["status"] == "decode_failed"
+    assert "decode failed" in evidence["summary"]
 
 
 def test_missing_audio_file_returns_missing_status(tmp_path):
@@ -114,6 +156,7 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format(tmp_path):
 
         assert mock_ydl_cls.called
         opts = mock_ydl_cls.call_args[0][0]
+
         # Verify format selector enforces audio-only lowest bitrate
         assert "worstaudio" in opts["format"]
         assert "worst" in opts["format"]
@@ -122,8 +165,8 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format(tmp_path):
 
 
 def test_find_candidates_integrates_audio_evidence(tmp_path):
-    wav_path = tmp_path / "sample.wav"
-    create_sample_wav(wav_path, duration_sec=60.0)
+    mp3_path = tmp_path / "sample.mp3"
+    create_compressed_mp3_fixture(mp3_path, duration_sec=60.0)
 
     transcript = "\n".join([
         "00:00:00,000 --> 00:00:20,000",
@@ -136,7 +179,7 @@ def test_find_candidates_integrates_audio_evidence(tmp_path):
         "Setelah itu keputusan tersebut mengubah segalanya.",
     ])
 
-    candidates = prefilter.find_candidates(transcript, audio_path=str(wav_path))
+    candidates = prefilter.find_candidates(transcript, audio_path=str(mp3_path))
 
     assert len(candidates) > 0
     for candidate in candidates:
@@ -148,8 +191,8 @@ def test_find_candidates_integrates_audio_evidence(tmp_path):
 
 
 def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_path):
-    wav_path = tmp_path / "secret_local_path.wav"
-    create_sample_wav(wav_path, duration_sec=60.0)
+    mp3_path = tmp_path / "secret_local_path.mp3"
+    create_compressed_mp3_fixture(mp3_path, duration_sec=60.0)
 
     transcript = "\n".join([
         "00:00:00,000 --> 00:00:20,000",
@@ -162,7 +205,7 @@ def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_p
         "Setelah itu keputusan tersebut mengubah segalanya.",
     ])
 
-    candidates = prefilter.find_candidates(transcript, audio_path=str(wav_path))
+    candidates = prefilter.find_candidates(transcript, audio_path=str(mp3_path))
     groups = prefilter.group_candidates(candidates)
     prompt = prefilter.build_gemini_prompt("https://youtube.test/v1", groups)
 
@@ -170,5 +213,5 @@ def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_p
     assert "RMS " in prompt
     assert "Peak " in prompt
     # Strict check: local filepath or audio_path string must NEVER be exposed in prompt
-    assert str(wav_path) not in prompt
+    assert str(mp3_path) not in prompt
     assert "secret_local_path" not in prompt

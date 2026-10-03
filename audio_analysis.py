@@ -1,7 +1,6 @@
-import os
 import math
+import os
 import struct
-import subprocess
 import wave
 
 try:
@@ -15,9 +14,10 @@ except ImportError:
     miniaudio = None
 
 
-def _decode_to_pcm(filepath, start_sec=0.0, end_sec=None):
+def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
     """
-    Decode compressed or uncompressed audio file into raw 16-bit mono PCM sample bytes and sample rate.
+    Decode compressed (M4A, MP3, WebM, Opus, FLAC, Vorbis) or uncompressed (WAV) audio file
+    into raw 16-bit mono PCM sample bytes and sample rate using av / miniaudio / wave decoders.
     Returns (pcm_bytes, sample_rate).
     """
     if not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
@@ -44,10 +44,10 @@ def _decode_to_pcm(filepath, start_sec=0.0, end_sec=None):
                 if sw == 2 and nch == 1:
                     return raw_bytes, sr
                 elif sw == 2 and nch > 1:
-                    mono_samples = []
+                    mono = []
                     for i in range(0, len(raw_bytes), 2 * nch):
-                        mono_samples.append(raw_bytes[i:i+2])
-                    return b"".join(mono_samples), sr
+                        mono.append(raw_bytes[i : i + 2])
+                    return b"".join(mono), sr
         except Exception:
             pass
 
@@ -55,9 +55,9 @@ def _decode_to_pcm(filepath, start_sec=0.0, end_sec=None):
     if av is not None:
         try:
             container = av.open(filepath)
-            audio_stream = next((s for s in container.streams if s.type == 'audio'), None)
+            audio_stream = next((s for s in container.streams if s.type == "audio"), None)
             if audio_stream:
-                resampler = av.AudioResampler(format='s16', layout='mono', rate=16000)
+                resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
                 pcm_chunks = []
                 for frame in container.decode(audio_stream):
                     t = frame.time if frame.time is not None else 0.0
@@ -75,10 +75,13 @@ def _decode_to_pcm(filepath, start_sec=0.0, end_sec=None):
         except Exception:
             pass
 
-    # 3. Miniaudio decoder for MP3, WAV, FLAC, Vorbis
+    # 3. Production decoder via miniaudio (MP3, FLAC, Vorbis, WAV)
     if miniaudio is not None:
         try:
-            decoded = miniaudio.decode_file(filepath, output_format=miniaudio.SampleFormat.SIGNED16)
+            decoded = miniaudio.decode_file(
+                filepath,
+                output_format=miniaudio.SampleFormat.SIGNED16
+            )
             if decoded and decoded.samples:
                 raw_bytes = decoded.samples.tobytes()
                 sr = decoded.sample_rate
@@ -86,29 +89,17 @@ def _decode_to_pcm(filepath, start_sec=0.0, end_sec=None):
 
                 start_idx = int(start_sec * sr) * 2 * nch
                 end_idx = int(end_sec * sr) * 2 * nch if end_sec is not None else len(raw_bytes)
-                sliced = raw_bytes[max(0, start_idx):min(len(raw_bytes), end_idx)]
+                sliced = raw_bytes[max(0, start_idx) : min(len(raw_bytes), end_idx)]
 
                 if nch == 1:
                     return sliced, sr
                 else:
-                    mono_samples = []
+                    mono = []
                     for i in range(0, len(sliced), 2 * nch):
-                        mono_samples.append(sliced[i:i+2])
-                    return b"".join(mono_samples), sr
+                        mono.append(sliced[i : i + 2])
+                    return b"".join(mono), sr
         except Exception:
             pass
-
-    # 4. ffmpeg pipe fallback if available
-    try:
-        cmd = ["ffmpeg", "-ss", str(start_sec)]
-        if end_sec is not None:
-            cmd.extend(["-to", str(end_sec)])
-        cmd.extend(["-i", str(filepath), "-f", "s16le", "-ac", "1", "-ar", "16000", "-y", "pipe:1"])
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=10)
-        if res.returncode == 0 and res.stdout:
-            return res.stdout, 16000
-    except Exception:
-        pass
 
     return None, 16000
 
@@ -124,7 +115,7 @@ def _analyze_pcm_bytes(pcm_data, sample_rate=16000):
     sum_sq = 0.0
     max_abs = 0
 
-    frame_size = int(sample_rate * 0.02)
+    frame_size = int(sample_rate * 0.02)  # 20ms frame size
     silence_threshold = 327.0  # ~ -40dB relative to 32768
     total_frames = 0
     silence_frames = 0
@@ -204,7 +195,7 @@ def analyze_audio_segment(audio_path, start_sec, end_sec):
 
     evidence["audio_present"] = True
 
-    pcm_data, sr = _decode_to_pcm(audio_path, start_sec, end_sec)
+    pcm_data, sr = _decode_file_to_pcm(audio_path, start_sec, end_sec)
 
     if pcm_data:
         stats = _analyze_pcm_bytes(pcm_data, sr)
@@ -218,6 +209,6 @@ def analyze_audio_segment(audio_path, start_sec, end_sec):
             )
             return evidence
 
-    evidence["status"] = "verified_present"
-    evidence["summary"] = f"Audio [{evidence['start']}s - {evidence['end']}s]: audio file present"
+    evidence["status"] = "decode_failed"
+    evidence["summary"] = f"Audio [{evidence['start']}s - {evidence['end']}s]: decode failed"
     return evidence
