@@ -395,12 +395,15 @@ def _structural_candidate_score(segments, start, end):
     return round(score_val, 3)
 
 
-def find_candidates(transcript_text, audio_path=None, limit=None):
+def find_candidates(transcript_text, limit=None, audio_path=None):
     """
     Search across entire transcript for non-overlapping candidate story moments (30-90s).
     Keyword/signals are indicators, not strict prerequisites.
-    No limit / candidate-count cap applied.
+    Preserves 100% backward compatibility for legacy positional arguments find_candidates(text, limit).
     """
+    if isinstance(limit, str) and audio_path is None:
+        audio_path, limit = limit, None
+
     segments = parse(transcript_text)
 
     if not segments:
@@ -461,8 +464,20 @@ def find_candidates(transcript_text, audio_path=None, limit=None):
                     candidate_start,
                     candidate_end,
                 )
-            except Exception:
-                audio_ev = None
+            except Exception as e:
+                audio_ev = {
+                    "start": candidate_start,
+                    "end": candidate_end,
+                    "duration": duration,
+                    "audio_present": True,
+                    "status": "decode_failed",
+                    "rms_db": None,
+                    "peak_db": None,
+                    "speech_ratio": None,
+                    "silence_ratio": None,
+                    "pause_count": None,
+                    "summary": f"Audio [{candidate_start:.1f}s - {candidate_end:.1f}s]: decode failed ({str(e)})",
+                }
 
         candidates.append(
             {

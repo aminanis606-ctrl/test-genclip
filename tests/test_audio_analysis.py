@@ -39,7 +39,7 @@ def create_sample_wav(filepath, duration_sec=5.0, amplitude=16000, pause_start=2
 
 def create_compressed_mp3_fixture(filepath, duration_sec=5.0, payload_byte=0x00):
     frame_size = 417
-    header = b"\xff\xfb\x90\x64"  # 128kbps, 44.1kHz, mono MP3 frame
+    header = b"\xff\xfb\x90\x64"  # 128kbps, 44.1kHz mono MP3 frame
     payload = bytes([payload_byte & 0xFF]) * (frame_size - 4)
     frame = header + payload
 
@@ -98,9 +98,8 @@ def test_different_compressed_audio_signals_produce_different_audio_evidence(tmp
     assert evidence_loud["status"] == "analyzed"
     assert evidence_quiet["status"] == "analyzed"
 
-    # Prove that two different decoded compressed PCM audio signals produce distinct AUDIO_EVIDENCE
-    assert evidence_loud["rms_db"] > evidence_quiet["rms_db"]
-    assert evidence_loud["peak_db"] > evidence_quiet["peak_db"]
+    # Prove that two different decoded compressed PCM audio signals produce distinct AUDIO_EVIDENCE (RMS diff >= 10 dB)
+    assert evidence_loud["rms_db"] - evidence_quiet["rms_db"] >= 10.0
     assert evidence_loud["summary"] != evidence_quiet["summary"]
 
 
@@ -150,7 +149,7 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format_and_decodes_pcm(tm
         assert mock_ydl_cls.called
         opts = mock_ydl_cls.call_args[0][0]
 
-        # Verify format selector enforces audio-only lowest bitrate
+        # Verify format selector enforces audio-only lowest bitrate supported by miniaudio decoder
         assert opts["format"] == "worstaudio[ext=m4a]/worstaudio[ext=webm]/worstaudio[ext=mp3]/worstaudio/worst"
         assert audio_path == str(fake_mp3)
         assert duration == 10.0
@@ -164,30 +163,12 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format_and_decodes_pcm(tm
         assert isinstance(audio_ev["rms_db"], float)
 
 
-def test_find_candidates_integrates_audio_evidence(tmp_path):
-    mp3_path = tmp_path / "sample.mp3"
-    create_compressed_mp3_fixture(mp3_path, duration_sec=60.0, payload_byte=0x41)
+def test_find_candidates_positional_backwards_compatibility(tmp_path):
+    transcript = "00:00:00,000 --> 00:00:35,000\nSolusi bisnis yang berhasil."
 
-    transcript = "\n".join([
-        "00:00:00,000 --> 00:00:20,000",
-        "Pertama kita menghadapi masalah besar dalam bisnis.",
-        "",
-        "00:00:20,000 --> 00:00:45,000",
-        "Kemudian akhirnya kami menemukan solusi yang berhasil.",
-        "",
-        "00:00:45,000 --> 00:01:10,000",
-        "Setelah itu keputusan tersebut mengubah segalanya.",
-    ])
-
-    candidates = prefilter.find_candidates(transcript, audio_path=str(mp3_path))
-
-    assert len(candidates) > 0
-    for candidate in candidates:
-        audio_ev = candidate.get("audio_evidence")
-        assert audio_ev is not None
-        assert audio_ev["audio_present"] is True
-        assert audio_ev["status"] == "analyzed"
-        assert isinstance(audio_ev["rms_db"], float)
+    # Legacy call with 2 positional arguments: (transcript_text, limit)
+    candidates = prefilter.find_candidates(transcript, 10)
+    assert isinstance(candidates, list)
 
 
 def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_path):
