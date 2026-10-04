@@ -49,6 +49,7 @@ chaquopy {
             install "requests"
             install "youtube-transcript-api==1.2.4"
             install "yt-dlp"
+            install "soundfile"
             install "miniaudio"
         }
     }

@@ -4,22 +4,24 @@ import struct
 import wave
 
 import miniaudio
+try:
+    import soundfile as sf
+except ImportError:
+    sf = None
 
 _PCM_CACHE = {}
 
 
 def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
     """
-    Decode compressed (MP3, Vorbis, FLAC) or uncompressed (WAV) audio file
-    into raw 16-bit mono PCM sample bytes and sample rate using miniaudio / wave decoders.
+    Decode compressed (MP3, Vorbis, FLAC, Opus) or uncompressed (WAV) audio file
+    into raw 16-bit mono PCM sample bytes and sample rate using miniaudio / soundfile / wave decoders.
     Returns (pcm_bytes, sample_rate).
     """
     if not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return None, 16000
 
     ext = os.path.splitext(filepath)[1].lower()
-    if ext not in [".mp3", ".wav", ".ogg", ".flac"]:
-        return None, 16000
 
     # 1. Standard WAV via built-in wave module
     if ext == ".wav":
@@ -45,7 +47,7 @@ def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
                         mono.append(raw_bytes[i : i + 2])
                     return b"".join(mono), sr
         except Exception:
-            return None, 16000
+            pass
 
     # 2. Production decoder via miniaudio (MP3, Vorbis, FLAC, WAV)
     try:
@@ -70,7 +72,23 @@ def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
                     mono.append(sliced[i : i + 2])
                 return b"".join(mono), sr
     except Exception:
-        return None, 16000
+        pass
+
+    # 3. Soundfile decoder (Opus, Ogg, MP3, FLAC, WAV)
+    if sf is not None:
+        try:
+            data, sr = sf.read(filepath, dtype="int16")
+            if data is not None and len(data) > 0:
+                if len(data.shape) > 1:
+                    data = data[:, 0]
+                raw_bytes = data.tobytes()
+
+                start_idx = int(start_sec * sr) * 2
+                end_idx = int(end_sec * sr) * 2 if end_sec is not None else len(raw_bytes)
+                sliced = raw_bytes[max(0, start_idx) : min(len(raw_bytes), end_idx)]
+                return sliced, sr
+        except Exception:
+            pass
 
     return None, 16000
 
