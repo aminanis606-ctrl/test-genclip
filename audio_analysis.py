@@ -8,134 +8,18 @@ import miniaudio
 _PCM_CACHE = {}
 
 
-def _decode_m4a_aac_to_pcm(filepath, start_sec=0.0, end_sec=None):
-    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
-        return None, 16000
-
-    try:
-        with open(filepath, "rb") as f:
-            data = f.read()
-
-        timescale = 44100
-        sample_durations = []
-        sample_sizes = []
-        sample_offsets = []
-
-        def parse_container(offset, end):
-            nonlocal timescale, sample_durations, sample_sizes, sample_offsets
-            curr = offset
-            while curr + 8 <= end:
-                size, btype = struct.unpack(">I4s", data[curr:curr + 8])
-                if size == 1 and curr + 16 <= end:
-                    size = struct.unpack(">Q", data[curr + 8:curr + 16])[0]
-                    hdr_len = 16
-                else:
-                    hdr_len = 8
-
-                if size < hdr_len or curr + size > end:
-                    break
-
-                body = curr + hdr_len
-                body_end = curr + size
-
-                if btype == b"mdhd":
-                    version = data[body]
-                    if version == 0 and body + 20 <= body_end:
-                        timescale = struct.unpack(">I", data[body + 12:body + 16])[0]
-                    elif version == 1 and body + 28 <= body_end:
-                        timescale = struct.unpack(">I", data[body + 20:body + 24])[0]
-                elif btype == b"stts" and body + 8 <= body_end:
-                    entry_count = struct.unpack(">I", data[body + 4:body + 8])[0]
-                    pos = body + 8
-                    for _ in range(entry_count):
-                        if pos + 8 > body_end:
-                            break
-                        cnt, dur = struct.unpack(">II", data[pos:pos + 8])
-                        sample_durations.extend([dur] * cnt)
-                        pos += 8
-                elif btype == b"stsz" and body + 12 <= body_end:
-                    sz, count = struct.unpack(">II", data[body + 4:body + 12])
-                    if sz > 0:
-                        sample_sizes = [sz] * count
-                    else:
-                        pos = body + 12
-                        for _ in range(count):
-                            if pos + 4 > body_end:
-                                break
-                            sample_sizes.append(struct.unpack(">I", data[pos:pos + 4])[0])
-                            pos += 4
-                elif btype == b"stco" and body + 8 <= body_end:
-                    count = struct.unpack(">I", data[body + 4:body + 8])[0]
-                    pos = body + 8
-                    for _ in range(count):
-                        if pos + 4 > body_end:
-                            break
-                        sample_offsets.append(struct.unpack(">I", data[pos:pos + 4])[0])
-                        pos += 4
-                elif btype == b"co64" and body + 8 <= body_end:
-                    count = struct.unpack(">I", data[body + 4:body + 8])[0]
-                    pos = body + 8
-                    for _ in range(count):
-                        if pos + 8 > body_end:
-                            break
-                        sample_offsets.append(struct.unpack(">Q", data[pos:pos + 8])[0])
-                        pos += 8
-                elif btype in (b"moov", b"trak", b"mdia", b"minf", b"stbl"):
-                    parse_container(body, body_end)
-
-                curr += size
-
-        parse_container(0, len(data))
-
-        if not sample_durations or not sample_sizes:
-            return None, 16000
-
-        pcm_samples = []
-        curr_t = 0.0
-        ts = float(timescale) if timescale > 0 else 44100.0
-
-        for i, (dur_units, sz) in enumerate(zip(sample_durations, sample_sizes)):
-            dur_sec = dur_units / ts
-            frame_end = curr_t + dur_sec
-
-            if end_sec is not None and curr_t > end_sec:
-                break
-
-            if frame_end >= start_sec and (end_sec is None or curr_t <= end_sec):
-                gain = 0
-                if i < len(sample_offsets):
-                    off = sample_offsets[i]
-                    if off + sz <= len(data) and sz >= 2:
-                        raw_sample = data[off:off + sz]
-                        b1 = raw_sample[0]
-                        b2 = raw_sample[1]
-                        gain = ((b1 & 0x0F) << 4) | ((b2 & 0xF0) >> 4)
-
-                amplitude = min(32767.0, max(0.0, (gain / 255.0) * 32767.0))
-                for n in range(1024):
-                    sample_val = int(amplitude * math.sin(2.0 * math.pi * 440.0 * n / 44100.0))
-                    pcm_samples.append(struct.pack("<h", sample_val))
-
-            curr_t = frame_end
-
-        if pcm_samples:
-            return b"".join(pcm_samples), 44100
-    except Exception:
-        pass
-
-    return None, 16000
-
-
 def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
     """
-    Decode compressed (MP3, Vorbis, FLAC, M4A, AAC) or uncompressed (WAV) audio file
-    into raw 16-bit mono PCM sample bytes and sample rate.
+    Decode compressed (MP3, Vorbis, FLAC) or uncompressed (WAV) audio file
+    into raw 16-bit mono PCM sample bytes and sample rate using miniaudio / wave decoders.
     Returns (pcm_bytes, sample_rate).
     """
     if not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
         return None, 16000
 
     ext = os.path.splitext(filepath)[1].lower()
+    if ext not in [".mp3", ".wav", ".ogg", ".flac"]:
+        return None, 16000
 
     # 1. Standard WAV via built-in wave module
     if ext == ".wav":
@@ -186,16 +70,7 @@ def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
                     mono.append(sliced[i : i + 2])
                 return b"".join(mono), sr
     except Exception:
-        pass
-
-    # 3. M4A / AAC container frame dequantizer
-    if ext in [".m4a", ".mp4", ".aac"]:
-        try:
-            pcm_bytes, sr = _decode_m4a_aac_to_pcm(filepath, start_sec, end_sec)
-            if pcm_bytes:
-                return pcm_bytes, sr
-        except Exception:
-            pass
+        return None, 16000
 
     return None, 16000
 

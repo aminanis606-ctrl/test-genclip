@@ -39,7 +39,7 @@ def create_sample_wav(filepath, duration_sec=5.0, amplitude=16000, pause_start=2
 
 def create_compressed_mp3_fixture(filepath, duration_sec=5.0, payload_byte=0x00):
     frame_size = 417
-    header = b"\xff\xfb\x90\x64"  # 128kbps, 44.1kHz, mono
+    header = b"\xff\xfb\x90\x64"  # 128kbps, 44.1kHz, mono MP3 frame
     payload = bytes([payload_byte & 0xFF]) * (frame_size - 4)
     frame = header + payload
 
