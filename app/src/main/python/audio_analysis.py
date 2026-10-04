@@ -3,13 +3,13 @@ import os
 import wave
 import numpy as np
 
-# PyAV (av) - Primary production decoder for WebM / Matroska / Opus / AAC
+# PyAV (av) - Primary decoder if present on host system
 try:
     import av
 except ImportError:
     av = None
 
-# Miniaudio - Production C decoder for FLAC / MP3 / WAV / Vorbis
+# Miniaudio - Production C decoder for Chaquopy/Android (FLAC / MP3 / WAV / Vorbis)
 try:
     import miniaudio
 except ImportError:
@@ -28,8 +28,7 @@ def load_audio_pcm(audio_path):
     """
     Decodes audio file into raw float32 PCM samples (mono) and sample rate.
     Supports WebM/Opus, OGG/Opus, MP3, FLAC, Vorbis, and WAV formats.
-    Uses PyAV (av) for WebM/Matroska/Opus, miniaudio for FLAC/MP3/WAV/Vorbis,
-    and soundfile/wave as additional fallbacks.
+    Attempts decoding using available decoders (PyAV, miniaudio, soundfile, wave).
     Caches PCM per file path to avoid redundant decoding.
     """
     if not os.path.exists(audio_path):
@@ -39,7 +38,7 @@ def load_audio_pcm(audio_path):
     if resolved_path in _PCM_CACHE:
         return _PCM_CACHE[resolved_path]
 
-    # Attempt 1: PyAV (Native ffmpeg bindings for WebM/Matroska/Opus/AAC/M4A/OGG)
+    # Attempt 1: PyAV (if available)
     if av is not None:
         try:
             container = av.open(resolved_path)
@@ -65,7 +64,7 @@ def load_audio_pcm(audio_path):
         except Exception:
             pass
 
-    # Attempt 2: miniaudio (Native C decoder for FLAC, MP3, WAV, Vorbis)
+    # Attempt 2: miniaudio (Native C decoder for FLAC, MP3, WAV, Vorbis on Chaquopy/Android)
     if miniaudio is not None:
         try:
             decoded = miniaudio.decode_file(resolved_path)
