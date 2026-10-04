@@ -132,10 +132,11 @@ def fetch_transcript_and_duration(vid):
 
 def fetch_audio(vid, url, cache_dir):
     cache_path = Path(cache_dir)
-    audio_file = cache_path / f"video_{vid}_audio.m4a"
 
-    if audio_file.exists() and audio_file.stat().st_size > 0:
-        return str(audio_file), None
+    for ext in ["mp3", "wav", "ogg", "flac", "m4a", "webm"]:
+        candidate = cache_path / f"video_{vid}_audio.{ext}"
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return str(candidate), None
 
     download_success = False
     error_msg = ""
@@ -144,7 +145,7 @@ def fetch_audio(vid, url, cache_dir):
     try:
         import yt_dlp
         ydl_opts = {
-            'format': 'bestaudio/best',
+            'format': 'worstaudio[ext=mp3]/worstaudio[ext=wav]/worstaudio[ext=ogg]/worstaudio/worst',
             'outtmpl': str(cache_path / f"video_{vid}_audio.%(ext)s"),
             'quiet': True,
             'no_warnings': True,
@@ -158,20 +159,15 @@ def fetch_audio(vid, url, cache_dir):
                 if raw_duration is not None:
                     media_duration = float(raw_duration)
 
-        for ext in ["m4a", "webm", "opus", "mp3", "aac"]:
+        for ext in ["mp3", "wav", "ogg", "flac", "m4a", "webm"]:
             candidate = cache_path / f"video_{vid}_audio.{ext}"
             if candidate.exists() and candidate.stat().st_size > 0:
-                if candidate != audio_file:
-                    candidate.rename(audio_file)
                 download_success = True
-                break
+                return str(candidate), media_duration
     except Exception as e:
         error_msg = str(e)
 
-    if not download_success or not audio_file.exists() or audio_file.stat().st_size == 0:
-        raise RuntimeError(f"Gagal mengunduh/mengambil audio untuk video ID '{vid}': {error_msg or 'Audio tidak tersedia'}")
-
-    return str(audio_file), media_duration
+    raise RuntimeError(f"Gagal mengunduh/mengambil audio untuk video ID '{vid}': {error_msg or 'Audio tidak tersedia'}")
 
 
 def get_video_contract(url, cache_dir=None):
