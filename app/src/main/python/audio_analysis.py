@@ -3,12 +3,19 @@ import os
 import wave
 import numpy as np
 
-# Try importing miniaudio; if not available, fallback to wave/soundfile
+# PyAV (av) - Primary production decoder for WebM / Matroska / Opus / AAC
+try:
+    import av
+except ImportError:
+    av = None
+
+# Miniaudio - Production C decoder for FLAC / MP3 / WAV / Vorbis
 try:
     import miniaudio
 except ImportError:
     miniaudio = None
 
+# Soundfile - libsndfile fallback decoder for OGG / FLAC / WAV
 try:
     import soundfile as sf
 except ImportError:
@@ -20,8 +27,9 @@ _PCM_CACHE = {}
 def load_audio_pcm(audio_path):
     """
     Decodes audio file into raw float32 PCM samples (mono) and sample rate.
-    Uses miniaudio (native FLAC/MP3/WAV/Vorbis decoder) with soundfile / libsndfile
-    fallback for OGG/Opus/WebM formats on Chaquopy/Android.
+    Supports WebM/Opus, OGG/Opus, MP3, FLAC, Vorbis, and WAV formats.
+    Uses PyAV (av) for WebM/Matroska/Opus, miniaudio for FLAC/MP3/WAV/Vorbis,
+    and soundfile/wave as additional fallbacks.
     Caches PCM per file path to avoid redundant decoding.
     """
     if not os.path.exists(audio_path):
@@ -31,12 +39,37 @@ def load_audio_pcm(audio_path):
     if resolved_path in _PCM_CACHE:
         return _PCM_CACHE[resolved_path]
 
-    # Attempt 1: miniaudio (Primary fast native C decoder)
+    # Attempt 1: PyAV (Native ffmpeg bindings for WebM/Matroska/Opus/AAC/M4A/OGG)
+    if av is not None:
+        try:
+            container = av.open(resolved_path)
+            audio_streams = [s for s in container.streams if s.type == "audio"]
+            if audio_streams:
+                audio_stream = audio_streams[0]
+                sample_rate = audio_stream.codec_context.sample_rate or 48000
+                resampled_chunks = []
+
+                for frame in container.decode(audio_stream):
+                    arr = frame.to_ndarray()
+                    if arr.ndim > 1:
+                        arr = arr.mean(axis=0)  # Downmix to mono
+                    resampled_chunks.append(arr.astype(np.float32))
+
+                if resampled_chunks:
+                    samples = np.concatenate(resampled_chunks)
+                    if np.abs(samples).max() > 1.0:
+                        samples = samples / 32768.0
+                    res = (samples, sample_rate, "ok")
+                    _PCM_CACHE[resolved_path] = res
+                    return res
+        except Exception:
+            pass
+
+    # Attempt 2: miniaudio (Native C decoder for FLAC, MP3, WAV, Vorbis)
     if miniaudio is not None:
         try:
             decoded = miniaudio.decode_file(resolved_path)
             samples = np.array(decoded.samples, dtype=np.float32)
-            # Normalize int16 or float32 PCM if needed
             if decoded.nchannels > 1:
                 samples = samples.reshape(-1, decoded.nchannels).mean(axis=1)
             if np.abs(samples).max() > 1.0:
@@ -47,7 +80,7 @@ def load_audio_pcm(audio_path):
         except Exception:
             pass
 
-    # Attempt 2: soundfile / libsndfile fallback (Handles OGG/Opus, WebM/Opus)
+    # Attempt 3: soundfile / libsndfile fallback (Handles OGG, FLAC, WAV)
     if sf is not None:
         try:
             data, sample_rate = sf.read(resolved_path, dtype="float32")
@@ -59,7 +92,7 @@ def load_audio_pcm(audio_path):
         except Exception:
             pass
 
-    # Attempt 3: Standard library wave (Uncompressed WAV fallback)
+    # Attempt 4: Standard library wave (Uncompressed WAV fallback)
     try:
         with wave.open(resolved_path, "rb") as wf:
             sample_rate = wf.getframerate()

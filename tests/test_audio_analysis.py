@@ -5,6 +5,8 @@ import wave
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import av
+import numpy as np
 import soundfile as sf
 
 # Ensure app/src/main/python is in sys.path
@@ -37,11 +39,32 @@ def create_sample_wav(filepath, duration_sec=5.0, amplitude=16000, pause_start=2
         wf.writeframes(b"".join(frames))
 
 
-def create_compressed_opus_fixture(filepath, duration_sec=5.0, amplitude=0.8, sample_rate=16000):
+def create_genuine_webm_opus_fixture(filepath, duration_sec=5.0, amplitude=0.8, sample_rate=48000):
+    """
+    Encodes a genuine WebM container file with a real Opus audio stream using PyAV.
+    This creates an authentic Matroska/WebM container matching real YouTube downloads.
+    """
+    container = av.open(str(filepath), mode="w", format="webm")
+    stream = container.add_stream("opus", rate=sample_rate)
+    stream.layout = "mono"
+
     num_samples = int(duration_sec * sample_rate)
-    t = [i / sample_rate for i in range(num_samples)]
-    signal = [amplitude * math.sin(2 * math.pi * 440 * ti) for ti in t]
-    sf.write(str(filepath), signal, sample_rate, format="OGG", subtype="OPUS")
+    t = np.linspace(0, duration_sec, num_samples, endpoint=False)
+    samples = (amplitude * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
+
+    frame_size = 960  # Standard Opus frame duration (20ms at 48kHz)
+    for i in range(0, num_samples, frame_size):
+        chunk = samples[i : i + frame_size]
+        if len(chunk) < frame_size:
+            chunk = np.pad(chunk, (0, frame_size - len(chunk)))
+        frame = av.AudioFrame.from_ndarray(chunk.reshape(1, -1), format="s16", layout="mono")
+        frame.rate = sample_rate
+        for packet in stream.encode(frame):
+            container.mux(packet)
+
+    for packet in stream.encode():
+        container.mux(packet)
+    container.close()
 
 
 def test_audio_segment_analysis_on_wav_file(tmp_path):
@@ -65,11 +88,11 @@ def test_audio_segment_analysis_on_wav_file(tmp_path):
     assert "Audio [0.0s - 5.0s]:" in evidence["summary"]
 
 
-def test_real_compressed_opus_audio_decoding_and_analysis(tmp_path):
-    opus_path = tmp_path / "sample.opus"
-    create_compressed_opus_fixture(opus_path, duration_sec=5.0, amplitude=0.8)
+def test_real_genuine_webm_opus_audio_decoding_and_analysis(tmp_path):
+    webm_path = tmp_path / "sample.webm"
+    create_genuine_webm_opus_fixture(webm_path, duration_sec=5.0, amplitude=0.8)
 
-    evidence = audio_analysis.analyze_audio_segment(str(opus_path), start_sec=0.0, end_sec=5.0)
+    evidence = audio_analysis.analyze_audio_segment(str(webm_path), start_sec=0.0, end_sec=5.0)
 
     assert evidence["audio_present"] is True
     assert evidence["status"] == "analyzed"
@@ -77,30 +100,30 @@ def test_real_compressed_opus_audio_decoding_and_analysis(tmp_path):
     assert isinstance(evidence["peak_db"], float)
 
 
-def test_different_compressed_opus_audio_signals_produce_different_audio_evidence(tmp_path):
-    opus_loud = tmp_path / "loud.opus"
-    opus_quiet = tmp_path / "quiet.opus"
+def test_different_webm_opus_audio_signals_produce_different_audio_evidence(tmp_path):
+    webm_loud = tmp_path / "loud.webm"
+    webm_quiet = tmp_path / "quiet.webm"
 
-    # Signal A: Loud compressed Opus audio (amplitude 0.9)
-    create_compressed_opus_fixture(opus_loud, duration_sec=5.0, amplitude=0.9)
+    # Signal A: Loud genuine WebM Opus audio (amplitude 0.9)
+    create_genuine_webm_opus_fixture(webm_loud, duration_sec=5.0, amplitude=0.9)
 
-    # Signal B: Quiet compressed Opus audio (amplitude 0.05)
-    create_compressed_opus_fixture(opus_quiet, duration_sec=5.0, amplitude=0.05)
+    # Signal B: Quiet genuine WebM Opus audio (amplitude 0.05)
+    create_genuine_webm_opus_fixture(webm_quiet, duration_sec=5.0, amplitude=0.05)
 
-    evidence_loud = audio_analysis.analyze_audio_segment(str(opus_loud), start_sec=0.0, end_sec=5.0)
-    evidence_quiet = audio_analysis.analyze_audio_segment(str(opus_quiet), start_sec=0.0, end_sec=5.0)
+    evidence_loud = audio_analysis.analyze_audio_segment(str(webm_loud), start_sec=0.0, end_sec=5.0)
+    evidence_quiet = audio_analysis.analyze_audio_segment(str(webm_quiet), start_sec=0.0, end_sec=5.0)
 
     assert evidence_loud["status"] == "analyzed"
     assert evidence_quiet["status"] == "analyzed"
 
-    # Prove that two different decoded compressed PCM audio signals produce distinct AUDIO_EVIDENCE (> 10 dB difference)
+    # Prove that two different decoded WebM Opus PCM audio signals produce distinct AUDIO_EVIDENCE (> 10 dB difference)
     assert evidence_loud["rms_db"] > evidence_quiet["rms_db"] + 10.0
     assert evidence_loud["peak_db"] > evidence_quiet["peak_db"] + 10.0
     assert evidence_loud["summary"] != evidence_quiet["summary"]
 
 
 def test_decode_failed_for_corrupted_audio_file(tmp_path):
-    corrupt_file = tmp_path / "corrupt.opus"
+    corrupt_file = tmp_path / "corrupt.webm"
     corrupt_file.write_bytes(b"INVALID_HEADER_GARBAGE_BYTES")
 
     evidence = audio_analysis.analyze_audio_segment(str(corrupt_file), start_sec=0.0, end_sec=5.0)
@@ -111,7 +134,7 @@ def test_decode_failed_for_corrupted_audio_file(tmp_path):
 
 
 def test_missing_audio_file_returns_missing_status(tmp_path):
-    non_existent = tmp_path / "missing.opus"
+    non_existent = tmp_path / "missing.webm"
 
     evidence = audio_analysis.analyze_audio_segment(
         str(non_existent),
@@ -131,7 +154,7 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format_and_decodes_pcm(tm
     fake_webm = tmp_path / f"video_{vid}_audio.webm"
 
     def mock_extract(target_url, download=True):
-        create_compressed_opus_fixture(fake_webm, duration_sec=10.0, amplitude=0.8)
+        create_genuine_webm_opus_fixture(fake_webm, duration_sec=10.0, amplitude=0.8)
         return {"duration": 10.0}
 
     mock_ydl = MagicMock()
@@ -150,7 +173,7 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format_and_decodes_pcm(tm
         assert audio_path == str(fake_webm)
         assert duration == 10.0
 
-        # Prove that the downloaded audio file passes directly through decoder to PCM and candidate AUDIO_EVIDENCE
+        # Prove that the downloaded WebM Opus audio file passes directly through decoder to PCM and candidate AUDIO_EVIDENCE
         transcript = "00:00:00,000 --> 00:00:35,000\nSolusi bisnis yang berhasil."
         candidates = prefilter.find_candidates(transcript, audio_path=audio_path)
         assert len(candidates) > 0
@@ -168,8 +191,8 @@ def test_find_candidates_positional_backwards_compatibility(tmp_path):
 
 
 def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_path):
-    opus_path = tmp_path / "secret_local_path.opus"
-    create_compressed_opus_fixture(opus_path, duration_sec=60.0, amplitude=0.8)
+    webm_path = tmp_path / "secret_local_path.webm"
+    create_genuine_webm_opus_fixture(webm_path, duration_sec=60.0, amplitude=0.8)
 
     transcript = "\n".join([
         "00:00:00,000 --> 00:00:20,000",
@@ -182,7 +205,7 @@ def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_p
         "Setelah itu keputusan tersebut mengubah segalanya.",
     ])
 
-    candidates = prefilter.find_candidates(transcript, audio_path=str(opus_path))
+    candidates = prefilter.find_candidates(transcript, audio_path=str(webm_path))
     groups = prefilter.group_candidates(candidates)
     prompt = prefilter.build_gemini_prompt("https://youtube.test/v1", groups)
 
@@ -190,5 +213,5 @@ def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_p
     assert "RMS " in prompt
     assert "Peak " in prompt
     # Strict check: local filepath or audio_path string must NEVER be exposed in prompt
-    assert str(opus_path) not in prompt
+    assert str(webm_path) not in prompt
     assert "secret_local_path" not in prompt
