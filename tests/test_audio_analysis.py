@@ -5,6 +5,8 @@ import wave
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import soundfile as sf
+
 # Ensure app/src/main/python is in sys.path
 sys.path.insert(
     0,
@@ -35,6 +37,13 @@ def create_sample_wav(filepath, duration_sec=5.0, amplitude=16000, pause_start=2
         wf.writeframes(b"".join(frames))
 
 
+def create_compressed_opus_fixture(filepath, duration_sec=5.0, amplitude=0.8, sample_rate=16000):
+    num_samples = int(duration_sec * sample_rate)
+    t = [i / sample_rate for i in range(num_samples)]
+    signal = [amplitude * math.sin(2 * math.pi * 440 * ti) for ti in t]
+    sf.write(str(filepath), signal, sample_rate, format="OGG", subtype="OPUS")
+
+
 def test_audio_segment_analysis_on_wav_file(tmp_path):
     wav_path = tmp_path / "test_audio.wav"
     create_sample_wav(wav_path, duration_sec=5.0, amplitude=12000, pause_start=2.0, pause_end=2.5)
@@ -56,11 +65,11 @@ def test_audio_segment_analysis_on_wav_file(tmp_path):
     assert "Audio [0.0s - 5.0s]:" in evidence["summary"]
 
 
-def test_real_audio_decoding_and_analysis(tmp_path):
-    wav_path = tmp_path / "sample.wav"
-    create_sample_wav(wav_path, duration_sec=5.0, amplitude=18000)
+def test_real_compressed_opus_audio_decoding_and_analysis(tmp_path):
+    opus_path = tmp_path / "sample.opus"
+    create_compressed_opus_fixture(opus_path, duration_sec=5.0, amplitude=0.8)
 
-    evidence = audio_analysis.analyze_audio_segment(str(wav_path), start_sec=0.0, end_sec=5.0)
+    evidence = audio_analysis.analyze_audio_segment(str(opus_path), start_sec=0.0, end_sec=5.0)
 
     assert evidence["audio_present"] is True
     assert evidence["status"] == "analyzed"
@@ -68,30 +77,30 @@ def test_real_audio_decoding_and_analysis(tmp_path):
     assert isinstance(evidence["peak_db"], float)
 
 
-def test_different_audio_signals_produce_different_audio_evidence(tmp_path):
-    wav_loud = tmp_path / "loud.wav"
-    wav_quiet = tmp_path / "quiet.wav"
+def test_different_compressed_opus_audio_signals_produce_different_audio_evidence(tmp_path):
+    opus_loud = tmp_path / "loud.opus"
+    opus_quiet = tmp_path / "quiet.opus"
 
-    # Signal A: Loud audio (amplitude 25000)
-    create_sample_wav(wav_loud, duration_sec=5.0, amplitude=25000, pause_start=0.0, pause_end=0.0)
+    # Signal A: Loud compressed Opus audio (amplitude 0.9)
+    create_compressed_opus_fixture(opus_loud, duration_sec=5.0, amplitude=0.9)
 
-    # Signal B: Quiet audio (amplitude 1000)
-    create_sample_wav(wav_quiet, duration_sec=5.0, amplitude=1000, pause_start=0.0, pause_end=0.0)
+    # Signal B: Quiet compressed Opus audio (amplitude 0.05)
+    create_compressed_opus_fixture(opus_quiet, duration_sec=5.0, amplitude=0.05)
 
-    evidence_loud = audio_analysis.analyze_audio_segment(str(wav_loud), start_sec=0.0, end_sec=5.0)
-    evidence_quiet = audio_analysis.analyze_audio_segment(str(wav_quiet), start_sec=0.0, end_sec=5.0)
+    evidence_loud = audio_analysis.analyze_audio_segment(str(opus_loud), start_sec=0.0, end_sec=5.0)
+    evidence_quiet = audio_analysis.analyze_audio_segment(str(opus_quiet), start_sec=0.0, end_sec=5.0)
 
     assert evidence_loud["status"] == "analyzed"
     assert evidence_quiet["status"] == "analyzed"
 
-    # Prove that two different decoded PCM audio signals produce distinct AUDIO_EVIDENCE
-    assert evidence_loud["rms_db"] > evidence_quiet["rms_db"]
-    assert evidence_loud["peak_db"] > evidence_quiet["peak_db"]
+    # Prove that two different decoded compressed PCM audio signals produce distinct AUDIO_EVIDENCE (> 10 dB difference)
+    assert evidence_loud["rms_db"] > evidence_quiet["rms_db"] + 10.0
+    assert evidence_loud["peak_db"] > evidence_quiet["peak_db"] + 10.0
     assert evidence_loud["summary"] != evidence_quiet["summary"]
 
 
 def test_decode_failed_for_corrupted_audio_file(tmp_path):
-    corrupt_file = tmp_path / "corrupt.mp3"
+    corrupt_file = tmp_path / "corrupt.opus"
     corrupt_file.write_bytes(b"INVALID_HEADER_GARBAGE_BYTES")
 
     evidence = audio_analysis.analyze_audio_segment(str(corrupt_file), start_sec=0.0, end_sec=5.0)
@@ -102,7 +111,7 @@ def test_decode_failed_for_corrupted_audio_file(tmp_path):
 
 
 def test_missing_audio_file_returns_missing_status(tmp_path):
-    non_existent = tmp_path / "missing.mp3"
+    non_existent = tmp_path / "missing.opus"
 
     evidence = audio_analysis.analyze_audio_segment(
         str(non_existent),
@@ -122,7 +131,7 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format_and_decodes_pcm(tm
     fake_webm = tmp_path / f"video_{vid}_audio.webm"
 
     def mock_extract(target_url, download=True):
-        create_sample_wav(fake_webm, duration_sec=10.0, amplitude=15000)
+        create_compressed_opus_fixture(fake_webm, duration_sec=10.0, amplitude=0.8)
         return {"duration": 10.0}
 
     mock_ydl = MagicMock()
@@ -159,8 +168,8 @@ def test_find_candidates_positional_backwards_compatibility(tmp_path):
 
 
 def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_path):
-    wav_path = tmp_path / "secret_local_path.wav"
-    create_sample_wav(wav_path, duration_sec=60.0, amplitude=18000)
+    opus_path = tmp_path / "secret_local_path.opus"
+    create_compressed_opus_fixture(opus_path, duration_sec=60.0, amplitude=0.8)
 
     transcript = "\n".join([
         "00:00:00,000 --> 00:00:20,000",
@@ -173,7 +182,7 @@ def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_p
         "Setelah itu keputusan tersebut mengubah segalanya.",
     ])
 
-    candidates = prefilter.find_candidates(transcript, audio_path=str(wav_path))
+    candidates = prefilter.find_candidates(transcript, audio_path=str(opus_path))
     groups = prefilter.group_candidates(candidates)
     prompt = prefilter.build_gemini_prompt("https://youtube.test/v1", groups)
 
@@ -181,5 +190,5 @@ def test_prompt_compiler_includes_audio_evidence_without_exposing_filepath(tmp_p
     assert "RMS " in prompt
     assert "Peak " in prompt
     # Strict check: local filepath or audio_path string must NEVER be exposed in prompt
-    assert str(wav_path) not in prompt
+    assert str(opus_path) not in prompt
     assert "secret_local_path" not in prompt
