@@ -133,7 +133,7 @@ def fetch_transcript_and_duration(vid):
 def fetch_audio(vid, url, cache_dir):
     cache_path = Path(cache_dir)
 
-    for ext in ["mp3", "wav", "ogg", "flac", "m4a", "webm"]:
+    for ext in ["mp3", "wav", "ogg", "flac"]:
         candidate = cache_path / f"video_{vid}_audio.{ext}"
         if candidate.exists() and candidate.stat().st_size > 0:
             return str(candidate), None
@@ -145,7 +145,7 @@ def fetch_audio(vid, url, cache_dir):
     try:
         import yt_dlp
         ydl_opts = {
-            'format': 'worstaudio[ext=mp3]/worstaudio[ext=wav]/worstaudio[ext=ogg]/worstaudio/worst',
+            'format': 'worstaudio[ext=mp3]/worstaudio[ext=wav]/worstaudio[ext=ogg]/worstaudio[ext=flac]',
             'outtmpl': str(cache_path / f"video_{vid}_audio.%(ext)s"),
             'quiet': True,
             'no_warnings': True,
@@ -159,7 +159,7 @@ def fetch_audio(vid, url, cache_dir):
                 if raw_duration is not None:
                     media_duration = float(raw_duration)
 
-        for ext in ["mp3", "wav", "ogg", "flac", "m4a", "webm"]:
+        for ext in ["mp3", "wav", "ogg", "flac"]:
             candidate = cache_path / f"video_{vid}_audio.{ext}"
             if candidate.exists() and candidate.stat().st_size > 0:
                 download_success = True

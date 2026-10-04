@@ -16,6 +16,8 @@ def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
         return None, 16000
 
     ext = os.path.splitext(filepath)[1].lower()
+    if ext not in [".mp3", ".wav", ".ogg", ".flac"]:
+        return None, 16000
 
     # 1. Standard WAV via built-in wave module
     if ext == ".wav":
