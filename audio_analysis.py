@@ -5,6 +5,8 @@ import wave
 
 import miniaudio
 
+_PCM_CACHE = {}
+
 
 def _decode_m4a_aac_to_pcm(filepath, start_sec=0.0, end_sec=None):
     if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
@@ -198,6 +200,25 @@ def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
     return None, 16000
 
 
+def _get_decoded_pcm(filepath):
+    """Cache decoded 16-bit PCM samples per audio file to prevent redundant decoding per candidate."""
+    if not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+        return None, 16000
+
+    mtime = os.path.getmtime(filepath)
+    cache_key = (os.path.abspath(filepath), mtime)
+
+    if cache_key in _PCM_CACHE:
+        return _PCM_CACHE[cache_key]
+
+    pcm_data, sr = _decode_file_to_pcm(filepath, 0.0, None)
+    if pcm_data:
+        _PCM_CACHE[cache_key] = (pcm_data, sr)
+        return pcm_data, sr
+
+    return None, 16000
+
+
 def _analyze_pcm_bytes(pcm_data, sample_rate=16000):
     if not pcm_data or len(pcm_data) < 2:
         return None
@@ -289,19 +310,24 @@ def analyze_audio_segment(audio_path, start_sec, end_sec):
 
     evidence["audio_present"] = True
 
-    pcm_data, sr = _decode_file_to_pcm(audio_path, start_sec, end_sec)
+    pcm_data, sr = _get_decoded_pcm(audio_path)
 
     if pcm_data:
-        stats = _analyze_pcm_bytes(pcm_data, sr)
-        if stats:
-            evidence.update(stats)
-            evidence["status"] = "analyzed"
-            evidence["summary"] = (
-                f"Audio [{evidence['start']}s - {evidence['end']}s]: "
-                f"RMS {stats['rms_db']} dB, Peak {stats['peak_db']} dB, "
-                f"Speech {int(stats['speech_ratio']*100)}%, Pauses {stats['pause_count']}"
-            )
-            return evidence
+        start_idx = int(start_sec * sr) * 2
+        end_idx = int(end_sec * sr) * 2 if end_sec else len(pcm_data)
+        sliced_pcm = pcm_data[max(0, start_idx) : min(len(pcm_data), end_idx)]
+
+        if sliced_pcm:
+            stats = _analyze_pcm_bytes(sliced_pcm, sr)
+            if stats:
+                evidence.update(stats)
+                evidence["status"] = "analyzed"
+                evidence["summary"] = (
+                    f"Audio [{evidence['start']}s - {evidence['end']}s]: "
+                    f"RMS {stats['rms_db']} dB, Peak {stats['peak_db']} dB, "
+                    f"Speech {int(stats['speech_ratio']*100)}%, Pauses {stats['pause_count']}"
+                )
+                return evidence
 
     evidence["status"] = "decode_failed"
     evidence["summary"] = f"Audio [{evidence['start']}s - {evidence['end']}s]: decode failed"
