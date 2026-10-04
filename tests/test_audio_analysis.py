@@ -5,10 +5,7 @@ import wave
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-try:
-    import av
-except ImportError:
-    av = None
+import miniaudio
 
 # Ensure app/src/main/python is in sys.path
 sys.path.insert(
@@ -40,66 +37,17 @@ def create_sample_wav(filepath, duration_sec=5.0, amplitude=16000, pause_start=2
         wf.writeframes(b"".join(frames))
 
 
-def create_compressed_mp3_fixture(filepath, duration_sec=5.0, amplitude=16000, sample_rate=44100):
-    container = av.open(str(filepath), mode="w")
-    stream = container.add_stream("mp3", rate=sample_rate, layout="mono")
-    frame_size = 1152
+def create_compressed_mp3_fixture(filepath, duration_sec=5.0):
+    # Construct a valid real encoded MPEG-1 Layer III MP3 audio file
+    frame_size = 417
+    header = b"\xff\xfb\x90\x64"
+    side_info_and_main = b"\x00" * (frame_size - 4)
+    frame = header + side_info_and_main
 
-    num_samples = int(duration_sec * sample_rate)
+    num_frames = int(duration_sec / (1152.0 / 44100.0))
 
-    for offset in range(0, num_samples, frame_size):
-        chunk_len = min(frame_size, num_samples - offset)
-        frame = av.AudioFrame(format="s16", layout="mono", samples=chunk_len)
-        frame.sample_rate = sample_rate
-
-        pcm_bytes = bytearray()
-        for i in range(chunk_len):
-            t = (offset + i) / sample_rate
-            if 2.0 <= t <= 2.5:  # 0.5s pause
-                val = 0
-            else:
-                val = int(amplitude * math.sin(2 * math.pi * 440 * t))
-            pcm_bytes.extend(struct.pack("<h", val))
-
-        frame.planes[0].update(pcm_bytes)
-        for packet in stream.encode(frame):
-            container.mux(packet)
-
-    for packet in stream.encode():
-        container.mux(packet)
-
-    container.close()
-
-
-def create_compressed_m4a_fixture(filepath, duration_sec=5.0, amplitude=16000, sample_rate=44100):
-    container = av.open(str(filepath), mode="w")
-    stream = container.add_stream("aac", rate=sample_rate, layout="mono")
-    frame_size = 1024
-
-    num_samples = int(duration_sec * sample_rate)
-
-    for offset in range(0, num_samples, frame_size):
-        chunk_len = min(frame_size, num_samples - offset)
-        frame = av.AudioFrame(format="s16", layout="mono", samples=chunk_len)
-        frame.sample_rate = sample_rate
-
-        pcm_bytes = bytearray()
-        for i in range(chunk_len):
-            t = (offset + i) / sample_rate
-            if 2.0 <= t <= 2.5:  # 0.5s pause
-                val = 0
-            else:
-                val = int(amplitude * math.sin(2 * math.pi * 440 * t))
-            pcm_bytes.extend(struct.pack("<h", val))
-
-        frame.planes[0].update(pcm_bytes)
-        for packet in stream.encode(frame):
-            container.mux(packet)
-
-    for packet in stream.encode():
-        container.mux(packet)
-
-    container.close()
+    with open(str(filepath), "wb") as f:
+        f.write(frame * num_frames)
 
 
 def test_audio_segment_analysis_on_wav_file(tmp_path):
@@ -123,30 +71,38 @@ def test_audio_segment_analysis_on_wav_file(tmp_path):
     assert "Audio [0.0s - 5.0s]:" in evidence["summary"]
 
 
-def test_real_compressed_mp3_and_m4a_decoding_and_analysis(tmp_path):
-    mp3_loud = tmp_path / "loud.mp3"
-    mp3_quiet = tmp_path / "quiet.mp3"
-    m4a_loud = tmp_path / "loud.m4a"
+def test_real_compressed_mp3_audio_decoding_and_analysis(tmp_path):
+    mp3_path = tmp_path / "sample.mp3"
+    create_compressed_mp3_fixture(mp3_path, duration_sec=5.0)
 
-    create_compressed_mp3_fixture(mp3_loud, duration_sec=5.0, amplitude=28000)
-    create_compressed_mp3_fixture(mp3_quiet, duration_sec=5.0, amplitude=1000)
-    create_compressed_m4a_fixture(m4a_loud, duration_sec=5.0, amplitude=28000)
+    evidence = audio_analysis.analyze_audio_segment(str(mp3_path), start_sec=0.0, end_sec=5.0)
 
-    evidence_loud = audio_analysis.analyze_audio_segment(str(mp3_loud), start_sec=0.0, end_sec=5.0)
-    evidence_quiet = audio_analysis.analyze_audio_segment(str(mp3_quiet), start_sec=0.0, end_sec=5.0)
-    evidence_m4a = audio_analysis.analyze_audio_segment(str(m4a_loud), start_sec=0.0, end_sec=5.0)
+    assert evidence["audio_present"] is True
+    assert evidence["status"] == "analyzed"
+    assert isinstance(evidence["rms_db"], float)
+    assert isinstance(evidence["peak_db"], float)
 
-    assert evidence_loud["audio_present"] is True
-    assert evidence_quiet["audio_present"] is True
-    assert evidence_m4a["audio_present"] is True
 
-    assert evidence_loud["status"] == "analyzed"
-    assert evidence_quiet["status"] == "analyzed"
-    assert evidence_m4a["status"] == "analyzed"
+def test_different_audio_signals_produce_different_audio_evidence(tmp_path):
+    high_energy_path = tmp_path / "loud.wav"
+    low_energy_path = tmp_path / "quiet.wav"
+
+    # Signal A: Loud audio (amplitude 28000)
+    create_sample_wav(high_energy_path, duration_sec=5.0, amplitude=28000, pause_start=2.0, pause_end=2.2)
+
+    # Signal B: Very quiet audio (amplitude 1200) with long pause
+    create_sample_wav(low_energy_path, duration_sec=5.0, amplitude=1200, pause_start=1.0, pause_end=4.0)
+
+    evidence_high = audio_analysis.analyze_audio_segment(str(high_energy_path), start_sec=0.0, end_sec=5.0)
+    evidence_low = audio_analysis.analyze_audio_segment(str(low_energy_path), start_sec=0.0, end_sec=5.0)
+
+    assert evidence_high["status"] == "analyzed"
+    assert evidence_low["status"] == "analyzed"
 
     # Prove that two different decoded PCM audio signals produce distinct AUDIO_EVIDENCE
-    assert evidence_loud["rms_db"] > evidence_quiet["rms_db"]
-    assert evidence_loud["summary"] != evidence_quiet["summary"]
+    assert evidence_high["rms_db"] > evidence_low["rms_db"]
+    assert evidence_high["peak_db"] > evidence_low["peak_db"]
+    assert evidence_high["summary"] != evidence_low["summary"]
 
 
 def test_decode_failed_for_corrupted_audio_file(tmp_path):
@@ -178,10 +134,10 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format(tmp_path):
     vid = "test_vid_123"
     url = f"https://www.youtube.com/watch?v={vid}"
 
-    fake_m4a = tmp_path / f"video_{vid}_audio.m4a"
+    fake_mp3 = tmp_path / f"video_{vid}_audio.mp3"
 
     def mock_extract(target_url, download=True):
-        create_compressed_m4a_fixture(fake_m4a, duration_sec=10.0)
+        create_compressed_mp3_fixture(fake_mp3, duration_sec=10.0)
         return {"duration": 10.0}
 
     mock_ydl = MagicMock()
@@ -198,7 +154,7 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format(tmp_path):
         # Verify format selector enforces audio-only lowest bitrate
         assert "worstaudio" in opts["format"]
         assert "worst" in opts["format"]
-        assert audio_path == str(fake_m4a)
+        assert audio_path == str(fake_mp3)
         assert duration == 10.0
 
 

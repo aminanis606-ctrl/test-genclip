@@ -3,21 +3,13 @@ import os
 import struct
 import wave
 
-try:
-    import av
-except ImportError:
-    av = None
-
-try:
-    import miniaudio
-except ImportError:
-    miniaudio = None
+import miniaudio
 
 
 def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
     """
-    Decode compressed (M4A, AAC, MP3, WebM, Opus, FLAC, Vorbis) or uncompressed (WAV) audio file
-    into raw 16-bit mono PCM sample bytes and sample rate using av / miniaudio / wave decoders.
+    Decode compressed (MP3, Vorbis, FLAC) or uncompressed (WAV) audio file
+    into raw 16-bit mono PCM sample bytes and sample rate using miniaudio / wave decoders.
     Returns (pcm_bytes, sample_rate).
     """
     if not filepath or not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
@@ -49,58 +41,32 @@ def _decode_file_to_pcm(filepath, start_sec=0.0, end_sec=None):
                         mono.append(raw_bytes[i : i + 2])
                     return b"".join(mono), sr
         except Exception:
-            pass
+            return None, 16000
 
-    # 2. PyAV (av) decoder for M4A, AAC, MP3, WebM, Opus, Ogg, WAV
-    if av is not None:
-        try:
-            container = av.open(filepath)
-            audio_stream = next((s for s in container.streams if s.type == "audio"), None)
-            if audio_stream:
-                resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
-                pcm_chunks = []
-                for frame in container.decode(audio_stream):
-                    t = frame.time if frame.time is not None else 0.0
-                    rf_list = resampler.resample(frame)
-                    for rf in rf_list:
-                        rf_t = rf.time if rf.time is not None else t
-                        rf_dur = rf.samples / 16000.0
-                        if end_sec is not None and rf_t > end_sec:
-                            continue
-                        if start_sec is not None and (rf_t + rf_dur) < start_sec:
-                            continue
-                        pcm_chunks.append(bytes(rf.planes[0]))
-                container.close()
-                if pcm_chunks:
-                    return b"".join(pcm_chunks), 16000
-        except Exception:
-            pass
+    # 2. Production decoder via miniaudio (MP3, Vorbis, FLAC, WAV)
+    try:
+        decoded = miniaudio.decode_file(
+            filepath,
+            output_format=miniaudio.SampleFormat.SIGNED16
+        )
+        if decoded and decoded.samples:
+            raw_bytes = decoded.samples.tobytes()
+            sr = decoded.sample_rate
+            nch = decoded.nchannels
 
-    # 3. Production decoder via miniaudio (MP3, FLAC, Vorbis, WAV)
-    if miniaudio is not None:
-        try:
-            decoded = miniaudio.decode_file(
-                filepath,
-                output_format=miniaudio.SampleFormat.SIGNED16
-            )
-            if decoded and decoded.samples:
-                raw_bytes = decoded.samples.tobytes()
-                sr = decoded.sample_rate
-                nch = decoded.nchannels
+            start_idx = int(start_sec * sr) * 2 * nch
+            end_idx = int(end_sec * sr) * 2 * nch if end_sec is not None else len(raw_bytes)
+            sliced = raw_bytes[max(0, start_idx) : min(len(raw_bytes), end_idx)]
 
-                start_idx = int(start_sec * sr) * 2 * nch
-                end_idx = int(end_sec * sr) * 2 * nch if end_sec is not None else len(raw_bytes)
-                sliced = raw_bytes[max(0, start_idx) : min(len(raw_bytes), end_idx)]
-
-                if nch == 1:
-                    return sliced, sr
-                else:
-                    mono = []
-                    for i in range(0, len(sliced), 2 * nch):
-                        mono.append(sliced[i : i + 2])
-                    return b"".join(mono), sr
-        except Exception:
-            pass
+            if nch == 1:
+                return sliced, sr
+            else:
+                mono = []
+                for i in range(0, len(sliced), 2 * nch):
+                    mono.append(sliced[i : i + 2])
+                return b"".join(mono), sr
+    except Exception:
+        return None, 16000
 
     return None, 16000
 
