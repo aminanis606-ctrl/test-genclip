@@ -150,8 +150,8 @@ def test_fetch_audio_selects_lowest_bitrate_audio_only_format_and_decodes_pcm(tm
         assert mock_ydl_cls.called
         opts = mock_ydl_cls.call_args[0][0]
 
-        # Verify format selector enforces audio-only lowest bitrate supported by miniaudio decoder
-        assert opts["format"] == "worstaudio[ext=mp3]/worstaudio[ext=wav]/worstaudio[ext=ogg]/worstaudio[ext=flac]"
+        # Verify format selector enforces audio-only lowest bitrate
+        assert opts["format"] == "worstaudio[ext=m4a]/worstaudio[ext=webm]/worstaudio[ext=mp3]/worstaudio/worst"
         assert audio_path == str(fake_mp3)
         assert duration == 10.0
 
