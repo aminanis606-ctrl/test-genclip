@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 temp/
 clips/
+.gradle/
+.gradle
+build/
+app/build/
