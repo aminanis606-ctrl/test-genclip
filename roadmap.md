@@ -1,6 +1,6 @@
 # roadmap.md
-ROADMAP_VERSION: 1.4
-ROADMAP_UPDATED: 2026-10-02
+ROADMAP_VERSION: 1.5
+ROADMAP_UPDATED: 2026-10-05
 REPO: test-genclip
 
 ## PIPELINE
@@ -29,5 +29,13 @@ URL VIDEO
 - Prompt Compiler menyajikan fakta/evidence transkrip & timestamp terpisah dari instruksi evaluasi LLM.
 - HANYA menghasilkan template command yt-dlp untuk LLM; tidak menjalankan yt-dlp lokal di pipeline GenClip.
 
+## AUDIT & VALIDASI RUNTIME AUDIO PRODUCTION
+- Pipeline audio internal meng-decode audio WebM/Opus (EBML container) secara in-memory menggunakan demuxer pure Python dan soundfile/miniaudio tanpa ketergantungan binary/C AV external.
+- Menghasilkan bukti PCM nyata (RMS dB, Peak dB, speech ratio, silence ratio, pause count) yang membedakan sinyal audio secara presisi pada setiap candidate prefilter.
+- Multi-tier decoder handling: WebM/Opus -> miniaudio (FLAC/MP3/WAV/Vorbis) -> soundfile -> wave fallback. Status terukur: `analyzed`, `decode_failed`, `missing_file`.
+- Caching PCM terenkapsulasi (`_PCM_CACHE`) memastikan audio di-decode tepat 1 kali per file.
+- Formatan `AUDIO_EVIDENCE` terhubung ke prompt compiler tanpa pernah membocorkan `audio_path` internal ke LLM eksternal.
+- Catatan Keterbatasan CI: GitHub Actions runner (Ubuntu) memvalidasi penuh kompilasi APK (`gradle assembleDebug`) dan pengujian Python host unit/integration test. Namun, eksekusi JVM Android/Chaquopy secara live pada perangkat fisik/emulator tidak dapat dijalankan langsung di CI headless, sehingga pengujian end-to-end runtime Android divalidasi via APK build dan host Python test suite.
+
 ## STATUS
-Aktif — konsolidasi prefilter dan prompt compiler GenClip.
+Selesai — Validasi pipeline audio production Chaquopy/Android dan integrasi evidence prefilter.
