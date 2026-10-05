@@ -1,13 +1,9 @@
 import math
 import os
 import wave
+import io
+import struct
 import numpy as np
-
-# PyAV (av) - Primary decoder if present on host system
-try:
-    import av
-except ImportError:
-    av = None
 
 # Miniaudio - Production C decoder for Chaquopy/Android (FLAC / MP3 / WAV / Vorbis)
 try:
@@ -24,11 +20,140 @@ except ImportError:
 _PCM_CACHE = {}
 
 
+def demux_webm_opus_to_ogg(webm_bytes: bytes) -> bytes:
+    """
+    Parses an authentic Matroska/WebM EBML container, extracts the OpusHead
+    and SimpleBlock audio frames, and re-wraps them into a standard OGG/Opus bitstream.
+    Pure Python, zero binary dependencies.
+    """
+    def read_vint(stream):
+        first_byte_val = stream.read(1)
+        if not first_byte_val:
+            return None, 0
+        b = first_byte_val[0]
+        length = 1
+        mask = 0x80
+        while mask and not (b & mask):
+            length += 1
+            mask >>= 1
+        if length > 8:
+            return None, 0
+        value = b & (mask - 1)
+        for _ in range(length - 1):
+            next_b = stream.read(1)
+            if not next_b:
+                return None, 0
+            value = (value << 8) | next_b[0]
+        return value, length
+
+    def read_element_header(stream):
+        pos = stream.tell()
+        first_byte_val = stream.read(1)
+        if not first_byte_val:
+            return None, None, 0
+        b = first_byte_val[0]
+        id_len = 1
+        mask = 0x80
+        while mask and not (b & mask):
+            id_len += 1
+            mask >>= 1
+        stream.seek(pos)
+        raw_id = stream.read(id_len)
+        if len(raw_id) < id_len:
+            return None, None, 0
+        elem_id = int.from_bytes(raw_id, "big")
+        data_len, vint_len = read_vint(stream)
+        return elem_id, data_len, id_len + vint_len
+
+    stream = io.BytesIO(webm_bytes)
+    total_size = len(webm_bytes)
+
+    codec_private = None
+    opus_frames = []
+
+    while stream.tell() < total_size:
+        elem_id, data_len, header_len = read_element_header(stream)
+        if elem_id is None or data_len is None:
+            break
+
+        # Dive into EBML container elements
+        if elem_id in (0x1A45DFA3, 0x18538067, 0x1654AE6B, 0xAE, 0x1F43B675, 0x0F43B675):
+            continue
+
+        # CodecPrivate (0x63A2) - OpusHead
+        if elem_id == 0x63A2:
+            codec_private = stream.read(data_len)
+            continue
+
+        # SimpleBlock (0xA3) or Block (0xA1)
+        if elem_id in (0xA3, 0xA1):
+            block_bytes = stream.read(data_len)
+            if len(block_bytes) > 4:
+                tb_stream = io.BytesIO(block_bytes)
+                _, tn_len = read_vint(tb_stream)
+                tb_stream.seek(tn_len + 3)  # Skip track number, timecode, flags
+                frame_data = tb_stream.read()
+                if frame_data:
+                    opus_frames.append(frame_data)
+            continue
+
+        stream.seek(data_len, io.SEEK_CUR)
+
+    if not codec_private or not opus_frames:
+        raise ValueError("Could not find WebM Opus track or audio frames")
+
+    opus_head = codec_private if codec_private.startswith(b"OpusHead") else b"OpusHead" + codec_private
+    opus_tags = b"OpusTags" + struct.pack("<I", 8) + b"genclip\x00" + struct.pack("<I", 0)
+
+    # Ogg CRC32 table
+    crc_table = []
+    for i in range(256):
+        r = i << 24
+        for _ in range(8):
+            if r & 0x80000000:
+                r = ((r << 1) ^ 0x04C11DB7) & 0xFFFFFFFF
+            else:
+                r = (r << 1) & 0xFFFFFFFF
+        crc_table.append(r)
+
+    def ogg_crc(data: bytes) -> int:
+        crc = 0
+        for byte in data:
+            crc = ((crc << 8) & 0xFFFFFFFF) ^ crc_table[((crc >> 24) ^ byte) & 0xFF]
+        return crc
+
+    def make_page(header_type: int, granule_pos: int, serial: int, page_num: int, packets: list) -> bytes:
+        body = b"".join(packets)
+        segment_table = bytes([len(p) for p in packets])
+        header = struct.pack("<4sBBqIIIB", b"OggS", 0, header_type, granule_pos, serial, page_num, 0, len(packets)) + segment_table
+        full = header + body
+        checksum = ogg_crc(full)
+        return header[:22] + struct.pack("<I", checksum) + header[26:] + body
+
+    serial = 0x47454E43
+    buf = io.BytesIO()
+
+    buf.write(make_page(2, 0, serial, 0, [opus_head]))
+    buf.write(make_page(0, 0, serial, 1, [opus_tags]))
+
+    page_num = 2
+    granule = 0
+    chunk_size = 50
+    for i in range(0, len(opus_frames), chunk_size):
+        chunk = opus_frames[i : i + chunk_size]
+        is_last = (i + chunk_size) >= len(opus_frames)
+        granule += len(chunk) * 960
+        buf.write(make_page(4 if is_last else 0, granule, serial, page_num, chunk))
+        page_num += 1
+
+    return buf.getvalue()
+
+
 def load_audio_pcm(audio_path):
     """
     Decodes audio file into raw float32 PCM samples (mono) and sample rate.
     Supports WebM/Opus, OGG/Opus, MP3, FLAC, Vorbis, and WAV formats.
-    Attempts decoding using available decoders (PyAV, miniaudio, soundfile, wave).
+    Uses native C miniaudio decoder and soundfile (libsndfile) with in-memory WebM demuxing.
     Caches PCM per file path to avoid redundant decoding.
     """
     if not os.path.exists(audio_path):
@@ -38,31 +163,23 @@ def load_audio_pcm(audio_path):
     if resolved_path in _PCM_CACHE:
         return _PCM_CACHE[resolved_path]
 
-    # Attempt 1: PyAV (if available)
-    if av is not None:
-        try:
-            container = av.open(resolved_path)
-            audio_streams = [s for s in container.streams if s.type == "audio"]
-            if audio_streams:
-                audio_stream = audio_streams[0]
-                sample_rate = audio_stream.codec_context.sample_rate or 48000
-                resampled_chunks = []
+    # Attempt 1: Check if file is WebM / Matroska (EBML magic 0x1A45DFA3)
+    try:
+        with open(resolved_path, "rb") as f:
+            header_bytes = f.read(1024 * 1024)  # Read up to 1MB or full header
+            f.seek(0)
+            full_bytes = f.read()
 
-                for frame in container.decode(audio_stream):
-                    arr = frame.to_ndarray()
-                    if arr.ndim > 1:
-                        arr = arr.mean(axis=0)  # Downmix to mono
-                    resampled_chunks.append(arr.astype(np.float32))
-
-                if resampled_chunks:
-                    samples = np.concatenate(resampled_chunks)
-                    if np.abs(samples).max() > 1.0:
-                        samples = samples / 32768.0
-                    res = (samples, sample_rate, "ok")
-                    _PCM_CACHE[resolved_path] = res
-                    return res
-        except Exception:
-            pass
+        if header_bytes.startswith(b"\x1a\x45\xdf\xa3") and sf is not None:
+            ogg_bytes = demux_webm_opus_to_ogg(full_bytes)
+            data, sample_rate = sf.read(io.BytesIO(ogg_bytes), dtype="float32")
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            res = (data, sample_rate, "ok")
+            _PCM_CACHE[resolved_path] = res
+            return res
+    except Exception:
+        pass
 
     # Attempt 2: miniaudio (Native C decoder for FLAC, MP3, WAV, Vorbis on Chaquopy/Android)
     if miniaudio is not None:
