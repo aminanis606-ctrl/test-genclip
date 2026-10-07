@@ -324,30 +324,33 @@ def _candidate_windows(
     safe_starts = _safe_start_boundaries(segments)
     safe_ends = _safe_end_boundaries(segments)
 
-    windows = []
+    windows = set()
 
+    # Forward pass: for each safe start boundary, anchor the maximal safe end (longest complete thought within 30-90s)
     for candidate_start in safe_starts:
-        for candidate_end in safe_ends:
-            if candidate_end <= candidate_start:
-                continue
+        valid_ends = [
+            candidate_end
+            for candidate_end in safe_ends
+            if min_seconds <= (candidate_end - candidate_start) <= max_seconds
+        ]
+        if valid_ends:
+            windows.add((round(candidate_start, 3), round(max(valid_ends), 3)))
 
-            duration = candidate_end - candidate_start
+    # Backward pass: for each safe end boundary, anchor the earliest safe start boundary (fullest story origin within 30-90s)
+    for candidate_end in safe_ends:
+        valid_starts = [
+            candidate_start
+            for candidate_start in safe_starts
+            if min_seconds <= (candidate_end - candidate_start) <= max_seconds
+        ]
+        if valid_starts:
+            windows.add((round(min(valid_starts), 3), round(candidate_end, 3)))
 
-            if duration < min_seconds:
-                continue
-
-            if duration > max_seconds:
-                continue
-
-            windows.append(
-                (
-                    round(candidate_start, 3),
-                    round(candidate_end, 3),
-                    round(duration, 3),
-                )
-            )
-
-    return windows
+    result = [
+        (candidate_start, candidate_end, round(candidate_end - candidate_start, 3))
+        for candidate_start, candidate_end in windows
+    ]
+    return sorted(result)
 
 
 def _candidate_text(segments, start, end):
