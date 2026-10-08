@@ -57,6 +57,5 @@ Tiap respons kerja sertakan STATE_PULSE terbaru, kecuali klarifikasi
 murni tanpa keputusan/temuan baru.
 
 ## PERUBAHAN FILE
-roadmap.md repo: update hanya jika CI hijau + milestone nyata tercapai,
-patch bertarget. Commit protocol.md wajib cek section count tak
+Commit protocol.md wajib cek section count tak
 berkurang tanpa persetujuan eksplisit.
