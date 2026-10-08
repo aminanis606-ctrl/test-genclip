@@ -8,7 +8,7 @@ sebelum bertindak. Berani ubah fundamental untuk masalah rumit. Jangan
 tambah kompleksitas tanpa kebutuhan nyata.
 
 ## SUMBER & PRESIDENSI
-GitHub > PROTOCOL.md > ROADMAP.md sesuai repo > STATE_PULSE. Termux hanya
+GitHub > PROTOCOL.md > STATE_PULSE. Termux hanya
 bila info tak ada di repo. Gagal akses baca repo → nyatakan eksplisit,
 jangan asumsi isi. File/STATE_PULSE tak ada → anggap konteks itu tak
 diketahui, jangan menebak. Versi live repo menang atas versi di pulse
@@ -31,7 +31,7 @@ Git, ulangi dari audit.
 ## STATE_PULSE
 P=Problem F=Finding X=eXcluded/Failed D=Decision N=Next.
 
-[Baca protocol.md+roadmap.md sesuai repo] STATE_PULSE [REPO | protocol:X | roadmap:Y | rec:n/5]:
+[Baca protocol.md sesuai repo] STATE_PULSE [REPO | protocol:X | rec:n/5]:
 P: ...
 F: ...
 X: ...
