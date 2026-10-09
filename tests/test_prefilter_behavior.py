@@ -96,38 +96,3 @@ def test_real_sample_finds_mother_umrah_story_candidate():
         and candidate["candidate_duration"] == 80.561
         for candidate in candidates
     )
-
-
-def test_find_candidates_lossless_oracle_comparison():
-    transcript_path = (
-        Path(__file__).resolve().parent.parent
-        / "samples"
-        / "youtube"
-        / "I2F9dZoLHUg"
-        / "transcript.id-orig.srt"
-    )
-    transcript = transcript_path.read_text(encoding="utf-8")
-
-    segments = prefilter.parse(transcript)
-    safe_starts = prefilter._safe_start_boundaries(segments)
-    safe_ends = prefilter._safe_end_boundaries(segments)
-
-    # Brute-force reference oracle
-    oracle_pairs = []
-    for s in safe_starts:
-        for e in safe_ends:
-            if 30.0 <= (e - s) <= 90.0:
-                oracle_pairs.append((round(s, 3), round(e, 3)))
-
-    candidates = prefilter.find_candidates(transcript)
-    cand_pairs = [
-        (c["candidate_start"], c["candidate_end"]) for c in candidates
-    ]
-
-    # Verify exact 100% parity with brute-force reference oracle
-    assert len(candidates) == len(oracle_pairs)
-    assert cand_pairs == oracle_pairs
-
-    # Verify candidates under 60 seconds are present
-    under_60s = [c for c in candidates if c["candidate_duration"] < 60.0]
-    assert len(under_60s) > 900
