@@ -98,37 +98,7 @@ def test_real_sample_finds_mother_umrah_story_candidate():
     )
 
 
-def test_candidate_discovery_does_not_explode_cartesian():
-    # Build synthetic transcript with 10 safe starts and 10 safe ends in sequence.
-    # Cartesian pairing would produce ~100 candidates if unconstrained.
-    # Story-span discovery anchors natural story boundaries and produces bounded candidate counts.
-    lines = []
-    for i in range(10):
-        start_sec = i * 20
-        mid_sec = start_sec + 10
-        end_sec = start_sec + 20
-        # Start sentence (terminal boundary at end)
-        lines.append(f"00:{start_sec//60:02d}:{start_sec%60:02d},000 --> 00:{mid_sec//60:02d}:{mid_sec%60:02d},000")
-        lines.append(f"Pertama cerita ke {i} dimulai di sini.")
-        lines.append("")
-        lines.append(f"00:{mid_sec//60:02d}:{mid_sec%60:02d},000 --> 00:{end_sec//60:02d}:{end_sec%60:02d},000")
-        lines.append(f"Kemudian cerita ke {i} berlanjut dan selesai.")
-        lines.append("")
-
-    transcript = "\n".join(lines)
-    candidates = prefilter.find_candidates(transcript)
-
-    # Verify duration hard gate for all
-    for c in candidates:
-        assert 30.0 <= c["candidate_duration"] <= 90.0
-
-    # With 10 start boundaries and 15 end boundaries spaced 10s apart (spanning 0s to 200s),
-    # Cartesian product of all valid start-end pairs between 30s and 90s would produce 63 pairs.
-    # Natural story-span discovery anchors safe boundaries and produces 24 bounded candidates.
-    assert len(candidates) <= 25
-
-
-def test_real_sample_candidate_count_bounded():
+def test_find_candidates_lossless_oracle_comparison():
     transcript_path = (
         Path(__file__).resolve().parent.parent
         / "samples"
@@ -138,9 +108,26 @@ def test_real_sample_candidate_count_bounded():
     )
     transcript = transcript_path.read_text(encoding="utf-8")
 
-    candidates = prefilter.find_candidates(transcript)
+    segments = prefilter.parse(transcript)
+    safe_starts = prefilter._safe_start_boundaries(segments)
+    safe_ends = prefilter._safe_end_boundaries(segments)
 
-    # Legacy Cartesian generator produced 1823 candidates for this 20-min video.
-    # Story-span discovery reduces this by >80% while retaining all valid story moments.
-    assert len(candidates) < 500
-    assert len(candidates) > 50  # verify recall is maintained across 20-min video
+    # Brute-force reference oracle
+    oracle_pairs = []
+    for s in safe_starts:
+        for e in safe_ends:
+            if 30.0 <= (e - s) <= 90.0:
+                oracle_pairs.append((round(s, 3), round(e, 3)))
+
+    candidates = prefilter.find_candidates(transcript)
+    cand_pairs = [
+        (c["candidate_start"], c["candidate_end"]) for c in candidates
+    ]
+
+    # Verify exact 100% parity with brute-force reference oracle
+    assert len(candidates) == len(oracle_pairs)
+    assert cand_pairs == oracle_pairs
+
+    # Verify candidates under 60 seconds are present
+    under_60s = [c for c in candidates if c["candidate_duration"] < 60.0]
+    assert len(under_60s) > 900
