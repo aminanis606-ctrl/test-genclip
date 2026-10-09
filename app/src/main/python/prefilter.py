@@ -1,3 +1,4 @@
+import bisect
 import re
 
 
@@ -75,6 +76,9 @@ def parse(transcript):
                     "end": end,
                     "text": text,
                     "raw": line,
+                    "_token_set_cache": _token_set(text),
+                    "_is_terminal_cache": is_terminal_boundary(text),
+                    "_is_valid_start_cache": _is_valid_start(text),
                 })
 
             index += 1
@@ -101,6 +105,9 @@ def parse(transcript):
                     "end": end,
                     "text": text,
                     "raw": f"[{start:.3f} - {end:.3f}] {text}",
+                    "_token_set_cache": _token_set(text),
+                    "_is_terminal_cache": is_terminal_boundary(text),
+                    "_is_valid_start_cache": _is_valid_start(text),
                 })
 
         index += 1
@@ -141,7 +148,6 @@ def _lexical_overlap(left_text, right_text):
 def _safe_end_for_terminal(segments, index):
     terminal_start = float(segments[index]["start"])
     boundary = float(segments[index]["end"])
-    accumulated_text = segments[index]["text"]
 
     prior_overlap = [
         segment
@@ -163,6 +169,11 @@ def _safe_end_for_terminal(segments, index):
         )
         boundary = float(prior["end"])
 
+    if "_token_set_cache" in segments[index]:
+        accumulated_tokens = set(segments[index]["_token_set_cache"])
+    else:
+        accumulated_tokens = set(_token_set(segments[index]["text"]))
+
     for later in segments[index + 1:]:
         later_start = float(later["start"])
         later_end = float(later["end"])
@@ -170,13 +181,24 @@ def _safe_end_for_terminal(segments, index):
         if later_start >= boundary - 1e-6:
             break
 
+        later_tokens = (
+            later["_token_set_cache"]
+            if "_token_set_cache" in later
+            else _token_set(later["text"])
+        )
+
         if later_end <= boundary + 1e-6:
-            accumulated_text = f"{accumulated_text} {later['text']}"
+            accumulated_tokens.update(later_tokens)
             continue
 
-        if _lexical_overlap(accumulated_text, later["text"]) >= 0.45:
+        if not accumulated_tokens or not later_tokens:
+            overlap = 0.0
+        else:
+            overlap = len(accumulated_tokens & later_tokens) / len(accumulated_tokens)
+
+        if overlap >= 0.45:
             boundary = max(boundary, later_end)
-            accumulated_text = f"{accumulated_text} {later['text']}"
+            accumulated_tokens.update(later_tokens)
             continue
 
         break
@@ -188,7 +210,7 @@ def _safe_end_boundaries(segments):
     safe_ends = []
 
     for index, segment in enumerate(segments):
-        if not is_terminal_boundary(segment["text"]):
+        if not segment.get("_is_terminal_cache", is_terminal_boundary(segment["text"])):
             continue
 
         boundary = _safe_end_for_terminal(segments, index)
@@ -210,7 +232,9 @@ def _safe_start_boundaries(segments):
     safe_ends = _safe_end_boundaries(segments)
     safe_starts = []
 
-    if _is_valid_start(segments[0].get("text", "")):
+    first_text = segments[0].get("text", "")
+    first_valid = segments[0].get("_is_valid_start_cache", _is_valid_start(first_text))
+    if first_valid:
         safe_starts.append(round(float(segments[0]["start"]), 3))
 
     for boundary in safe_ends:
@@ -229,12 +253,13 @@ def _safe_start_boundaries(segments):
                     previous = earlier
 
             if previous is not None:
-                previous_text = str(previous.get("text", "")).strip()
+                is_term = previous.get("_is_terminal_cache", is_terminal_boundary(str(previous.get("text", "")).strip()))
 
-                if not is_terminal_boundary(previous_text):
+                if not is_term:
                     continue
 
-            if not _is_valid_start(segment.get("text", "")):
+            is_valid = segment.get("_is_valid_start_cache", _is_valid_start(segment.get("text", "")))
+            if not is_valid:
                 continue
 
             safe_starts.append(round(candidate_start, 3))
@@ -327,18 +352,10 @@ def _candidate_windows(
     windows = []
 
     for candidate_start in safe_starts:
-        for candidate_end in safe_ends:
-            if candidate_end <= candidate_start:
-                continue
-
+        left = bisect.bisect_left(safe_ends, candidate_start + min_seconds - 1e-6)
+        right = bisect.bisect_right(safe_ends, candidate_start + max_seconds + 1e-6)
+        for candidate_end in safe_ends[left:right]:
             duration = candidate_end - candidate_start
-
-            if duration < min_seconds:
-                continue
-
-            if duration > max_seconds:
-                continue
-
             windows.append(
                 (
                     round(candidate_start, 3),
@@ -418,6 +435,11 @@ def find_candidates(transcript_text, limit=None, audio_path=None):
     candidates = []
     seen = set()
 
+    # Pre-index segment boundaries and memoize context slice boundaries
+    seg_starts = [float(s["start"]) for s in segments]
+    seg_ends = [float(s["end"]) for s in segments]
+    memo_sub_boundaries = {}
+
     for candidate_start, candidate_end, duration in windows:
         key = (candidate_start, candidate_end)
 
@@ -448,12 +470,18 @@ def find_candidates(transcript_text, limit=None, audio_path=None):
             padding=30.0,
         )
 
-        safe_starts = _safe_start_boundaries(
-            [s for s in segments if s["end"] >= context_start and s["start"] <= context_end]
-        )
-        safe_ends = _safe_end_boundaries(
-            [s for s in segments if s["end"] >= context_start and s["start"] <= context_end]
-        )
+        i_start = bisect.bisect_left(seg_ends, context_start - 1e-6)
+        i_end = bisect.bisect_right(seg_starts, context_end + 1e-6)
+
+        slice_key = (i_start, i_end)
+        if slice_key not in memo_sub_boundaries:
+            sub = segments[i_start:i_end]
+            memo_sub_boundaries[slice_key] = (
+                _safe_start_boundaries(sub),
+                _safe_end_boundaries(sub),
+            )
+
+        safe_starts, safe_ends = memo_sub_boundaries[slice_key]
 
         audio_ev = None
         if audio_path:
@@ -554,10 +582,10 @@ def group_candidates(candidates):
     return groups
 
 
-def build_gemini_prompt(source_url, groups):
+def build_gemini_prompt(source_url, groups, full_transcript_text=None):
     """
     Build prompt for AI validation.
-    Accepts (source_url, groups) or (groups, source_url) for compatibility.
+    Accepts (source_url, groups), (groups, source_url), or optional full_transcript_text.
     """
     if isinstance(source_url, (list, tuple)):
         source_url, groups = groups if isinstance(groups, str) else "", source_url
@@ -578,12 +606,22 @@ def build_gemini_prompt(source_url, groups):
         "URL YouTube:",
         target_url,
         "",
+    ]
+
+    if full_transcript_text:
+        lines.extend([
+            "=== TRANSKRIP LENGKAP LINTAS TIMELINE (EVIDENCE) ===",
+            str(full_transcript_text).strip(),
+            "",
+        ])
+
+    lines.extend([
         "=== FAKTA DAN KONTEKS/EVIDENCE PREFILTER (GROUPS) ===",
         "Kandidat di bawah telah dikelompokkan berdasarkan tumpang tindih waktu/konteks (transitive overlap).",
         "Semua timestamp, batas aman, dan transkrip di bawah adalah fakta/evidence aktual.",
         "Kandidat dalam satu group harus dinilai bersamaan.",
         "",
-    ]
+    ])
 
     if not groups:
         lines.append("(Tidak ada kelompok kandidat ditemukan)")
@@ -602,13 +640,34 @@ def build_gemini_prompt(source_url, groups):
                     if isinstance(audio_ev, dict) and audio_ev.get("summary")
                     else "N/A"
                 )
+                sb = c.get("safe_start_boundaries", [])
+                eb = c.get("safe_end_boundaries", [])
+
+                sb_str = (
+                    f"[{', '.join(f'{x:.3f}' for x in sb)}]"
+                    if len(sb) <= 1
+                    else f"[{sb[0]:.3f}..{sb[-1]:.3f}]"
+                )
+                eb_str = (
+                    f"[{', '.join(f'{x:.3f}' for x in eb)}]"
+                    if len(eb) <= 1
+                    else f"[{eb[0]:.3f}..{eb[-1]:.3f}]"
+                )
+
+                pm = c.get("prefilter_marker", {})
+                pm_str = (
+                    f"{pm.get('start', 0.0):.3f} - {pm.get('end', 0.0):.3f} ({pm.get('duration', 0.0):.3f}s)"
+                    if isinstance(pm, dict)
+                    else str(pm)
+                )
+
                 cand_lines = [
                     f"CANDIDATE {cand_id}",
                     f"ANCHOR: {c['anchor_start']:.3f} - {c['anchor_end']:.3f} ({format_time(c['anchor_start'])} - {format_time(c['anchor_end'])})",
                     f"AVAILABLE_CONTEXT: {c['context_start']:.3f} - {c['context_end']:.3f} ({format_time(c['context_start'])} - {format_time(c['context_end'])})",
-                    f"PREFILTER_FINAL_MARKER: {c.get('prefilter_marker', 'NONE')}",
-                    f"SAFE_START_BOUNDARIES: {c.get('safe_start_boundaries', [])}",
-                    f"SAFE_END_BOUNDARIES: {c.get('safe_end_boundaries', [])}",
+                    f"PREFILTER_FINAL_MARKER: {pm_str}",
+                    f"SAFE_START_BOUNDARIES: {sb_str}",
+                    f"SAFE_END_BOUNDARIES: {eb_str}",
                 ]
                 if audio_summary != "N/A":
                     cand_lines.append(f"AUDIO_EVIDENCE: {audio_summary}")

@@ -279,7 +279,8 @@ public class MainActivity extends Activity {
                         module.callAttr(
                                 "build_gemini_prompt",
                                 sourceUrl,
-                                groups
+                                groups,
+                                transcript
                         );
 
                 String promptStr = prompt.toJava(String.class);

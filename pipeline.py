@@ -38,7 +38,7 @@ def main():
     print("[3] GROUPING & PROMPT BUILDER")
 
     groups = group_candidates(candidates)
-    prompt = build_gemini_prompt(url, groups)
+    prompt = build_gemini_prompt(url, groups, full_transcript_text=text)
 
     print(f"[GROUPING] {len(groups)} kelompok kandidat")
     print("\n" + "=" * 20 + " PROMPT AI VALIDATION " + "=" * 20 + "\n")
