@@ -96,3 +96,89 @@ def test_real_sample_finds_mother_umrah_story_candidate():
         and candidate["candidate_duration"] == 80.561
         for candidate in candidates
     )
+
+
+def test_find_candidates_lossless_oracle_comparison():
+    transcript_path = (
+        Path(__file__).resolve().parent.parent
+        / "samples"
+        / "youtube"
+        / "I2F9dZoLHUg"
+        / "transcript.id-orig.srt"
+    )
+    transcript = transcript_path.read_text(encoding="utf-8")
+
+    segments = prefilter.parse(transcript)
+    safe_starts = prefilter._safe_start_boundaries(segments)
+    safe_ends = prefilter._safe_end_boundaries(segments)
+
+    # Brute-force reference oracle
+    oracle_pairs = []
+    for s in safe_starts:
+        for e in safe_ends:
+            if 30.0 <= (e - s) <= 90.0:
+                oracle_pairs.append((round(s, 3), round(e, 3)))
+
+    candidates = prefilter.find_candidates(transcript)
+    cand_pairs = [
+        (c["candidate_start"], c["candidate_end"]) for c in candidates
+    ]
+
+    # Verify exact 100% parity with brute-force reference oracle
+    assert len(candidates) == len(oracle_pairs)
+    assert cand_pairs == oracle_pairs
+
+    # Verify candidates under 60 seconds are present (e.g. 523.479 -> 579.160 = 55.681s)
+    under_60s = [c for c in candidates if c["candidate_duration"] < 60.0]
+    assert len(under_60s) > 900
+
+
+def test_synthetic_2hour_transcript_lossless_oracle_and_performance():
+    # Build synthetic 2-hour transcript (7,200s, 360 segments of 20s each)
+    lines = []
+    for i in range(360):
+        s_sec = i * 20
+        e_sec = s_sec + 20
+        lines.append(f"{s_sec//3600:02d}:{(s_sec%3600)//60:02d}:{s_sec%60:02d},000 --> {e_sec//3600:02d}:{(e_sec%3600)//60:02d}:{e_sec%60:02d},000")
+        lines.append(f"Segmen cerita ke {i} dimulai di sini dan berlanjut sampai selesai.")
+        lines.append("")
+
+    synth_transcript = "\n".join(lines)
+    segments = prefilter.parse(synth_transcript)
+    safe_starts = prefilter._safe_start_boundaries(segments)
+    safe_ends = prefilter._safe_end_boundaries(segments)
+
+    oracle_pairs = []
+    for s in safe_starts:
+        for e in safe_ends:
+            if 30.0 <= (e - s) <= 90.0:
+                oracle_pairs.append((round(s, 3), round(e, 3)))
+
+    candidates = prefilter.find_candidates(synth_transcript)
+    cand_pairs = [(c["candidate_start"], c["candidate_end"]) for c in candidates]
+
+    assert len(candidates) == len(oracle_pairs)
+    assert cand_pairs == oracle_pairs
+
+
+def test_prompt_size_reduction_and_performance():
+    transcript_path = (
+        Path(__file__).resolve().parent.parent
+        / "samples"
+        / "youtube"
+        / "I2F9dZoLHUg"
+        / "transcript.id-orig.srt"
+    )
+    transcript = transcript_path.read_text(encoding="utf-8")
+
+    candidates = prefilter.find_candidates(transcript)
+    groups = prefilter.group_candidates(candidates)
+    prompt = prefilter.build_gemini_prompt(
+        "https://www.youtube.com/watch?v=I2F9dZoLHUg",
+        groups,
+        full_transcript_text=transcript,
+    )
+
+    # Target prompt size: <= 549,321 characters (80% drop from 2,746,605)
+    assert len(prompt) <= 549321
+    assert len(candidates) == 1823
