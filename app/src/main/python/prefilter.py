@@ -671,9 +671,10 @@ def build_gemini_prompt(source_url, groups, full_transcript_text=None):
                 ]
                 if audio_summary != "N/A":
                     cand_lines.append(f"AUDIO_EVIDENCE: {audio_summary}")
-                if not full_transcript_text:
-                    cand_lines.append(f"TEXT: {c.get('text', '')}")
-                cand_lines.append("")
+                cand_lines.extend([
+                    f"TEXT: {c.get('text', '')}",
+                    "",
+                ])
                 lines.extend(cand_lines)
 
     lines.extend([
