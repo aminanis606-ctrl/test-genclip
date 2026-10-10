@@ -43,3 +43,4 @@ jobs:
         with:
           name: clipper-core-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
